@@ -1,0 +1,16 @@
+/build/
+/需求与设计/
+/out/
+/apps/desktop/node_modules/
+/apps/desktop/dist/
+/apps/desktop/src-tauri/target/
+/apps/desktop/src-tauri/gen/
+/.vs/
+.env
+.env.*
+!.env.example
+/apps/desktop/src-tauri/binaries/*.exe
+*.pdb
+*.ilk
+*.user
+*.suo

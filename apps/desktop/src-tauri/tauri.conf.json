@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AudioProcess Prototype",
+  "version": "0.1.0",
+  "identifier": "com.audioprocess.prototype",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AudioProcess Graph Prototype",
+        "width": 1050,
+        "height": 820,
+        "minWidth": 800,
+        "minHeight": 650
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "externalBin": [
+      "binaries/graph-demo"
+    ]
+  }
+}
+
