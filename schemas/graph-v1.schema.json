@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AudioProcess Graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "nodes", "connections"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "nodes": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "type"],
+        "properties": {
+          "id": {"$ref": "#/$defs/id"},
+          "type": {"$ref": "#/$defs/id"},
+          "parameters": {
+            "type": "object",
+            "additionalProperties": {"type": ["number", "string", "boolean"]}
+          }
+        }
+      }
+    },
+    "connections": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": {"$ref": "#/$defs/endpoint"},
+          "to": {"$ref": "#/$defs/endpoint"}
+        }
+      }
+    },
+    "exports": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "node", "port"],
+        "properties": {
+          "name": {"$ref": "#/$defs/id"},
+          "node": {"$ref": "#/$defs/id"},
+          "port": {"$ref": "#/$defs/id"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": {"type": "string", "minLength": 1, "pattern": "^[^\\u0000]+$"},
+    "endpoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["node", "port"],
+      "properties": {"node": {"$ref": "#/$defs/id"}, "port": {"$ref": "#/$defs/id"}}
+    }
+  }
+}

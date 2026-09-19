@@ -1,4 +1,5 @@
 #include "audioprocess/wav_file.h"
+#include "audioprocess/detail/exclusive_file.h"
 
 #include <algorithm>
 #include <array>
@@ -34,7 +35,7 @@ std::uint32_t read_u32(std::istream& stream) {
         (static_cast<std::uint32_t>(bytes[3]) << 24U);
 }
 
-void write_u16(std::ostream& stream, std::uint16_t value) {
+void write_u16(detail::ExclusiveFile& stream, std::uint16_t value) {
     const std::array<unsigned char, 2> bytes{
         static_cast<unsigned char>(value & 0xFFU),
         static_cast<unsigned char>((value >> 8U) & 0xFFU),
@@ -42,7 +43,7 @@ void write_u16(std::ostream& stream, std::uint16_t value) {
     stream.write(reinterpret_cast<const char*>(bytes.data()), 2);
 }
 
-void write_u32(std::ostream& stream, std::uint32_t value) {
+void write_u32(detail::ExclusiveFile& stream, std::uint32_t value) {
     const std::array<unsigned char, 4> bytes{
         static_cast<unsigned char>(value & 0xFFU),
         static_cast<unsigned char>((value >> 8U) & 0xFFU),
@@ -77,7 +78,8 @@ std::int16_t float_to_pcm16(float sample) noexcept {
     if (clamped >= 1.0F) {
         return std::numeric_limits<std::int16_t>::max();
     }
-    return static_cast<std::int16_t>(std::lrint(clamped * 32768.0F));
+    const auto rounded = std::lrint(clamped * 32768.0F);
+    return static_cast<std::int16_t>(std::clamp(rounded, -32768L, 32767L));
 }
 
 }  // namespace
@@ -85,12 +87,17 @@ std::int16_t float_to_pcm16(float sample) noexcept {
 WavFileSource::WavFileSource(
     const std::filesystem::path& path,
     std::uint32_t maximum_block_frames)
-    : stream_(path, std::ios::binary), maximum_block_frames_(maximum_block_frames) {
+    : maximum_block_frames_(maximum_block_frames) {
     if (maximum_block_frames == 0) {
         throw std::invalid_argument("WAV source block size must be positive");
     }
+    if (path.empty() || path.native().find(std::filesystem::path::value_type{}) !=
+                            std::filesystem::path::string_type::npos) {
+        throw std::invalid_argument("Input path must be nonempty and contain no NUL characters");
+    }
+    stream_.open(path, std::ios::binary);
     if (!stream_) {
-        throw std::runtime_error("Unable to open input WAV file: " + path.string());
+        throw std::runtime_error("Unable to open input WAV file: " + detail::path_utf8(path));
     }
 
     std::array<char, 4> id{};
@@ -98,7 +105,11 @@ WavFileSource::WavFileSource(
     if (!chunk_is(id, "RIFF")) {
         throw std::runtime_error("Input file is not a RIFF file");
     }
-    (void)read_u32(stream_);
+    const auto riff_size = read_u32(stream_);
+    const auto riff_end = static_cast<std::uint64_t>(riff_size) + 8U;
+    if (riff_size < 4 || riff_end > std::filesystem::file_size(path)) {
+        throw std::runtime_error("Invalid or truncated RIFF container size");
+    }
     read_exact(stream_, id.data(), 4);
     if (!chunk_is(id, "WAVE")) {
         throw std::runtime_error("Input RIFF file is not WAVE audio");
@@ -108,6 +119,11 @@ WavFileSource::WavFileSource(
     bool found_data = false;
 
     while (stream_ && !(found_format && found_data)) {
+        const auto position = static_cast<std::uint64_t>(stream_.tellg());
+        if (position == riff_end) { break; }
+        if (position > riff_end || riff_end - position < 8U) {
+            throw std::runtime_error("Incomplete WAV chunk header within RIFF container");
+        }
         stream_.read(id.data(), 4);
         if (stream_.gcount() == 0) {
             break;
@@ -117,6 +133,10 @@ WavFileSource::WavFileSource(
         }
 
         const auto chunk_size = read_u32(stream_);
+        const auto padded_size = static_cast<std::uint64_t>(chunk_size) + (chunk_size & 1U);
+        if (padded_size > riff_end - position - 8U) {
+            throw std::runtime_error("WAV chunk extends beyond RIFF container");
+        }
         if (chunk_is(id, "fmt ")) {
             if (chunk_size < 16 || chunk_size > 1024) {
                 throw std::runtime_error("Unsupported WAV format chunk size");
@@ -125,7 +145,7 @@ WavFileSource::WavFileSource(
             const auto audio_format = read_u16(stream_);
             format_.channel_count = read_u16(stream_);
             format_.sample_rate = read_u32(stream_);
-            (void)read_u32(stream_);
+            const auto byte_rate = read_u32(stream_);
             block_align_ = read_u16(stream_);
             const auto bits_per_sample = read_u16(stream_);
 
@@ -133,7 +153,9 @@ WavFileSource::WavFileSource(
                 throw std::runtime_error("M0 supports only PCM16 WAV input");
             }
             if (!format_.valid() ||
-                block_align_ != static_cast<std::uint16_t>(format_.channel_count * 2U)) {
+                format_.channel_count > std::numeric_limits<std::uint16_t>::max() / 2U ||
+                block_align_ != format_.channel_count * 2U ||
+                static_cast<std::uint64_t>(format_.sample_rate) * block_align_ != byte_rate) {
                 throw std::runtime_error("Invalid PCM16 WAV format fields");
             }
 
@@ -211,8 +233,7 @@ WavFileSink::WavFileSink(
     const std::filesystem::path& path,
     AudioFormat format,
     std::uint32_t maximum_block_frames)
-    : stream_(path, std::ios::binary | std::ios::trunc),
-      format_(format),
+    : format_(format),
       maximum_block_frames_(maximum_block_frames) {
     if (!format.valid()) {
         throw std::invalid_argument("WAV sink requires a valid audio format");
@@ -220,31 +241,30 @@ WavFileSink::WavFileSink(
     if (maximum_block_frames == 0) {
         throw std::invalid_argument("WAV sink block size must be positive");
     }
-    if (!stream_) {
-        throw std::runtime_error("Unable to open output WAV file: " + path.string());
+    if (format.channel_count > std::numeric_limits<std::uint16_t>::max() / 2U ||
+        static_cast<std::uint64_t>(format.sample_rate) * format.channel_count * 2U >
+            std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument("PCM16 WAV format fields exceed their representable range");
     }
 
     scratch_.resize(
         static_cast<std::size_t>(maximum_block_frames_) * format_.channel_count * 2U);
-
-    stream_.write("RIFF", 4);
-    write_u32(stream_, 0);
-    stream_.write("WAVE", 4);
-    stream_.write("fmt ", 4);
-    write_u32(stream_, 16);
-    write_u16(stream_, 1);
-    write_u16(stream_, format_.channel_count);
-    write_u32(stream_, format_.sample_rate);
+    // 参数和分配先完成，再原子创建输出，错误配置不能破坏已有文件。
+    stream_ = std::make_unique<detail::ExclusiveFile>(path);
+    stream_->write("RIFF", 4);
+    write_u32(*stream_, 0);
+    stream_->write("WAVE", 4);
+    stream_->write("fmt ", 4);
+    write_u32(*stream_, 16);
+    write_u16(*stream_, 1);
+    write_u16(*stream_, format_.channel_count);
+    write_u32(*stream_, format_.sample_rate);
     const auto block_align = static_cast<std::uint16_t>(format_.channel_count * 2U);
-    write_u32(stream_, format_.sample_rate * block_align);
-    write_u16(stream_, block_align);
-    write_u16(stream_, 16);
-    stream_.write("data", 4);
-    write_u32(stream_, 0);
-
-    if (!stream_) {
-        throw std::runtime_error("Unable to write PCM16 WAV header");
-    }
+    write_u32(*stream_, format_.sample_rate * block_align);
+    write_u16(*stream_, block_align);
+    write_u16(*stream_, 16);
+    stream_->write("data", 4);
+    write_u32(*stream_, 0);
 }
 
 WavFileSink::~WavFileSink() {
@@ -266,7 +286,7 @@ void WavFileSink::write(const AudioBlock& block) {
     }
 
     const auto byte_count = block.sample_count() * 2U;
-    if (data_bytes_written_ + byte_count > std::numeric_limits<std::uint32_t>::max()) {
+    if (data_bytes_written_ + byte_count > std::numeric_limits<std::uint32_t>::max() - 36U) {
         throw std::runtime_error("M0 WAV writer does not support files larger than 4 GiB");
     }
 
@@ -276,12 +296,9 @@ void WavFileSink::write(const AudioBlock& block) {
         scratch_[index * 2 + 1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
     }
 
-    stream_.write(
+    stream_->write(
         reinterpret_cast<const char*>(scratch_.data()),
         static_cast<std::streamsize>(byte_count));
-    if (!stream_) {
-        throw std::runtime_error("Unable to write PCM16 WAV audio data");
-    }
 
     frames_written_ += block.frame_count;
     data_bytes_written_ += byte_count;
@@ -296,17 +313,13 @@ void WavFileSink::finalize() {
         throw std::runtime_error("M0 WAV writer cannot finalize a file larger than 4 GiB");
     }
 
-    stream_.seekp(4, std::ios::beg);
-    write_u32(stream_, static_cast<std::uint32_t>(36U + data_bytes_written_));
-    stream_.seekp(40, std::ios::beg);
-    write_u32(stream_, static_cast<std::uint32_t>(data_bytes_written_));
-    stream_.flush();
-    if (!stream_) {
-        throw std::runtime_error("Unable to finalize PCM16 WAV header");
-    }
+    stream_->seek(4);
+    write_u32(*stream_, static_cast<std::uint32_t>(36U + data_bytes_written_));
+    stream_->seek(40);
+    write_u32(*stream_, static_cast<std::uint32_t>(data_bytes_written_));
+    stream_->flush();
 
     finalized_ = true;
 }
 
 }  // namespace audioprocess
-

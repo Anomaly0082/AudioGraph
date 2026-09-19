@@ -5,6 +5,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <variant>
@@ -41,6 +42,12 @@ struct ParameterDescriptor {
     std::string id;
     ParameterType type;
     std::string description;
+    bool required{false};
+    std::optional<ParameterValue> default_value;
+    std::optional<double> minimum;
+    std::optional<double> maximum;
+    std::string unit;
+    std::vector<std::string> enum_values;
 };
 
 struct NodeDescriptor {
@@ -78,6 +85,10 @@ public:
     void register_type(NodeDescriptor descriptor, Factory factory);
 
     [[nodiscard]] const NodeDescriptor& descriptor(const std::string& type_id) const;
+    // 仅检查配置和补齐默认值，不创建节点，也不访问文件或设备。
+    [[nodiscard]] ParameterMap normalize_parameters(
+        const std::string& type_id,
+        const ParameterMap& parameters) const;
     [[nodiscard]] std::unique_ptr<ISyncNode> create(
         const std::string& type_id,
         const ParameterMap& parameters) const;
@@ -93,4 +104,3 @@ private:
 };
 
 }  // namespace audioprocess
-

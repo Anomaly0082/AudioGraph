@@ -14,3 +14,5 @@
 *.ilk
 *.user
 *.suo
+/examples/graphs/*.wav
+/examples/graphs/message.txt

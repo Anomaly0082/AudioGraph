@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "source", "type": "text_input", "parameters": {"text": "你好，AudioProcess。"}},
+    {"id": "save", "type": "text_output", "parameters": {"path": "message.txt"}}
+  ],
+  "connections": [{"from": {"node": "source", "port": "text"}, "to": {"node": "save", "port": "text"}}],
+  "exports": [
+    {"name": "text", "node": "source", "port": "text"},
+    {"name": "file", "node": "save", "port": "path"}
+  ]
+}

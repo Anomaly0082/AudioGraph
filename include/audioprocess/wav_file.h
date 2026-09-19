@@ -9,9 +9,12 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <memory>
 #include <vector>
 
 namespace audioprocess {
+
+namespace detail { class ExclusiveFile; }
 
 class WavFileSource {
 public:
@@ -38,6 +41,7 @@ private:
 
 class WavFileSink {
 public:
+    // 仅创建新文件，不覆盖已有目标；写入失败或取消时可能留下部分文件。
     WavFileSink(
         const std::filesystem::path& path,
         AudioFormat format,
@@ -53,7 +57,7 @@ public:
     [[nodiscard]] std::uint64_t frames_written() const noexcept { return frames_written_; }
 
 private:
-    std::ofstream stream_;
+    std::unique_ptr<detail::ExclusiveFile> stream_;
     AudioFormat format_{};
     std::uint32_t maximum_block_frames_{};
     std::uint64_t frames_written_{};
@@ -63,4 +67,3 @@ private:
 };
 
 }  // namespace audioprocess
-

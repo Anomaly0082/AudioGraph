@@ -46,7 +46,8 @@ struct AudioClip {
     }
 };
 
-using AudioClipPtr = std::shared_ptr<AudioClip>;
+// 图中的分支共享只读音频；修改音频的节点必须创建自己的输出缓冲区。
+using AudioClipPtr = std::shared_ptr<const AudioClip>;
 using DataValue = std::variant<AudioClipPtr, double, std::string, std::filesystem::path>;
 
 [[nodiscard]] inline DataType data_type_of(const DataValue& value) {

@@ -1,64 +1,79 @@
 # AudioProcess
 
-一个面向 AI Agent 的可扩展音频处理平台实验工程。核心目标是提供能力可发现、操作可验证、功能可扩展的音频处理接口；ASR、自动优化、实时设备和 MCP 都作为扩展接入。
+面向 AI 可控音频处理的 C++20 实验工程。当前交付 Graph 及以下的离线核心，包含 JSON 配置、节点注册、参数校验、同步 DAG 执行和文件输入输出。
 
-当前 M0 版本只实现最小闭环：
+## 已实现
+
+- 已注册节点：wav_input、gain、peak_meter、wav_output、text_input、text_output。
+- Graph JSON v1：节点、参数、连接、exports；相对路径基于配置文件目录。
+- 参数描述：类型、必填、默认值、范围、单位和文本枚举。
+- 独立图校验：不调用节点工厂，不打开音频或写产物。
+- 执行器：拓扑排序、每任务新节点、只读共享音频、类型与结果有效性检查、协作式取消。
+- 文件输出：原子独占创建，拒绝覆盖已有文件；中文路径和 UTF-8 文本。
+- 实验契约：流式 push/finish/reset、异步拥有型输入和协作取消。尚未接入正式 Graph。
+
+## 构建与测试
+
+使用 VS2022 Developer PowerShell，已固定 JSON 依赖源码，C++ 构建无需下载依赖。
+
+```powershell
+cmake --preset windows-msvc
+cmake --build --preset debug --parallel
+ctest --preset debug
+```
+
+Release 对应 `cmake --build --preset release --parallel`、`ctest --preset release`。
+也可使用原命令 `cmake -S . -B build -G "Visual Studio 17 2022" -A x64`。
+
+## 配置驱动运行
+
+```powershell
+.\build\Debug\graph-demo.exe --list-nodes
+.\build\Debug\graph-demo.exe --describe-node gain
+.\build\Debug\graph-demo.exe --graph .\examples\graphs\text.json --validate
+.\build\Debug\graph-demo.exe --graph .\examples\graphs\text.json
+```
+
+最后一条会创建 `examples/graphs/message.txt`。再次运行会拒绝覆盖；修改配置中的输出文件名即可继续实验。
+
+三个音频示例为 passthrough.json、gain.json、gain-peak.json。先把 PCM16 WAV 放在 `examples/graphs/input.wav`，或修改各 JSON 的输入路径。输出也相对于 JSON 所在目录，不能覆盖输入或已有文件。
+
+协议与扩展说明见 [Graph API](docs/graph-api.md)，格式见 [JSON Schema](schemas/graph-v1.schema.json)。
+
+## 目录与阅读顺序
 
 ```text
-PCM16 WAV → AudioBlock → BypassNode → PCM16 WAV
+include/audioprocess/   C++ 数据结构、Node、Graph 与 Executor 接口
+src/                   核心和文件节点实现
+apps/graph_demo/       JSON/命令行协议入口
+apps/audio_cli/        保留 M0 AudioBlock 旁路实验
+apps/desktop/          现有 React + Rust/Tauri 演示
+tests/                 核心、文件、配置、CLI 和契约实验测试
+examples/graphs/       可编辑 Graph 配置
+schemas/               文档结构 Schema
+third_party/           固定版本 nlohmann/json 和许可证
 ```
 
-后续将依次增加节点注册表、参数 Schema、可序列化 Graph、控制接口以及 Evaluator/Optimizer 扩展。
+建议读 `graph.h → node.h → graph_validator.cpp → sync_graph_executor.cpp → prototype_nodes.cpp`。JSON 解析位于独立 `audio_graph_io` 库，节点接口无需了解 JSON 库。
 
-## P0 GraphExecutor + Tauri 原型
+## 桌面兼容
 
-当前还包含一个带类型端口的同步 DAG 原型：
-
-```text
-WAV Input → Gain → WAV Output
-                 ↘ Peak Meter → Number
-```
-
-它验证：
-
-- `NodeRegistry` 能力发现。
-- 端口类型、必要输入和环路检查。
-- 拓扑排序与同步节点调度。
-- Tauri/React → Rust → C++ Sidecar 调用链。
-
-详细说明见 `需求与设计/06-P0-GraphExecutor与Tauri原型.md`。
-
-下一阶段设计见 [P1：可编程节点图设计计划](需求与设计/07-P1-可编程节点图设计计划.md)。该计划尚未实现，目标是通过 JSON 配置已有节点，由 C++ 校验和调度，并提供通用的桌面调用入口。
-
-## 构建
-
-在 Visual Studio 2022 Developer PowerShell 中运行：
+本阶段保留原 Tauri 固定图演示，不增加完整 JSON 编辑 UI。`graph-demo --input ... --output ... --gain-db ...` 保持原成功返回字段；错误同时输出机器 JSON 和 stderr 文本，兼容现有 Rust 解析。
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Debug
-ctest --test-dir build -C Debug --output-on-failure
-```
-
-## 使用
-
-```powershell
-.\build\Debug\audio-cli.exe `
-  --input .\input.wav `
-  --output .\output.wav `
-  --block-size 256
-```
-
-当前文件输入仅支持 RIFF/WAVE PCM16 单声道或多声道文件，输出为 PCM16 WAV。
-
-## Tauri 开发模式
-
-先构建 `graph-demo`，再启动桌面端：
-
-```powershell
-cmake --build build --config Debug --target graph-demo
-
+cmake --build --preset debug --target graph-demo
 Set-Location .\apps\desktop
-npm install
+npm ci
 npm run tauri -- dev
 ```
+
+Windows x64 CMake 构建会复制 Sidecar 到 `src-tauri/binaries`；重新运行 Tauri 开发/构建流程才会把新 Sidecar 放到桌面程序旁。仅复制 C++ 源目录的产物不会自动更新已经构建的桌面 EXE。
+
+## 当前边界
+
+- 正式 Executor 仅支持同步离线 DAG，Audio 是完整 AudioClip；长录音可能占用较多内存。
+- 文件编解码仅 PCM16 WAV，未实现 MP3/FLAC、采样率转换、实时设备、ASR、TTS、GPU 或云端服务。
+- 实验异步/流式接口不是实时产品能力；M0 AudioBlock 处理链与通用 Graph 尚未统一。
+- 上层受控 Workflow、AI 接口与参数搜索尚未实现。AI 编排不以执行任意 Python 为前提。
+- 取消是协作请求，失败可能留下部分新文件，图不提供文件事务回滚。
+- 需求与设计目录为本地讨论材料，按用户要求不提交 Git。

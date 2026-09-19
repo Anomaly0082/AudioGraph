@@ -38,12 +38,13 @@ private:
     struct CompiledNode {
         std::string id;
         NodeDescriptor descriptor;
-        std::unique_ptr<ISyncNode> instance;
+        std::string type_id;
+        ParameterMap parameters;
         std::vector<InboundConnection> inbound;
     };
 
     std::vector<CompiledNode> execution_plan_;
+    NodeRegistry registry_;  // 持有工厂快照，不依赖调用方 Registry 的生命周期。
 };
 
 }  // namespace audioprocess
-

@@ -1,4 +1,5 @@
 #include "audioprocess/audio_buffer.h"
+#include "audioprocess/execution_error.h"
 #include "audioprocess/prototype_nodes.h"
 #include "audioprocess/sync_graph_executor.h"
 #include "audioprocess/wav_file.h"
@@ -76,8 +77,8 @@ void test_type_mismatch_is_rejected() {
     try {
         [[maybe_unused]] auto executor =
             audioprocess::SyncGraphExecutor::compile(graph, registry);
-    } catch (const std::invalid_argument&) {
-        rejected = true;
+    } catch (const audioprocess::ExecutionError& error) {
+        rejected = error.code == "port_type_mismatch";
     }
     require(rejected, "Executor accepted a Number-to-Audio connection");
 }
