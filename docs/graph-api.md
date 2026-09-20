@@ -4,6 +4,8 @@
 
 现在还支持 [同步离线分块 Graph](streaming-graph.md)。下文的 DataValue/execute 描述主要针对整段同步 DAG；分块采用 AudioStream 端口和独立流式接口。
 
+[实时设备桥接](realtime-audio.md) 是独立的固定会话原型，尚不接受 GraphDefinition，也未增加 Registry 节点。不能把离线流式节点直接放到设备回调里执行。
+
 ## 配置和执行
 
 配置由 `schema_version: 1`、非空 nodes、connections 和可选 exports 组成。节点由唯一 id、已注册 type 和 parameters 定义。连接使用 from/to，各含 node 和 port。导出使用 name/node/port。

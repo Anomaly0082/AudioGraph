@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "input_device": "REPLACE_WITH_CAPTURE_ID_FROM_LIST_DEVICES",
+  "output_device": "REPLACE_WITH_PLAYBACK_ID_FROM_LIST_DEVICES",
+  "gain_db": -6,
+  "capacity_frames": 4096,
+  "target_frames": 960,
+  "period_frames": 256
+}

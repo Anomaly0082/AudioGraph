@@ -4,7 +4,7 @@ project(
     AudioProcess
     VERSION 0.1.0
     DESCRIPTION "Experimental block-based audio processing framework"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -20,6 +20,7 @@ add_library(audio_core STATIC
     src/streaming_graph_executor.cpp
     src/streaming_nodes.cpp
     src/wav_file.cpp
+    src/realtime_bridge.cpp
 )
 
 target_include_directories(audio_core
@@ -36,12 +37,38 @@ target_include_directories(nlohmann_json SYSTEM INTERFACE "${CMAKE_CURRENT_SOURC
 add_library(audio_graph_io STATIC src/graph_codec.cpp)
 target_link_libraries(audio_graph_io PUBLIC audio_core PRIVATE nlohmann_json::nlohmann_json)
 
+add_library(audio_realtime_config STATIC src/realtime_config.cpp)
+target_link_libraries(audio_realtime_config PUBLIC audio_core PRIVATE nlohmann_json::nlohmann_json)
+
+if(WIN32)
+    # 裁剪到 WASAPI 设备API；PUBLIC保证设备结构在C/C++两端的布局一致。
+    add_library(miniaudio STATIC src/miniaudio_impl.c)
+    target_include_directories(miniaudio SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+    target_compile_definitions(miniaudio PUBLIC
+        MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_WASAPI MA_NO_DECODING MA_NO_ENCODING
+        MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH MA_NO_ENGINE)
+    if(MSVC)
+        target_compile_options(miniaudio PRIVATE /W0)
+    endif()
+    target_link_libraries(miniaudio PRIVATE ole32)
+    add_library(audio_device_session STATIC src/realtime_session.cpp)
+    target_link_libraries(audio_device_session PUBLIC audio_core PRIVATE miniaudio)
+    add_executable(realtime-cli apps/realtime_cli/main.cpp)
+    target_link_libraries(realtime-cli PRIVATE audio_device_session audio_realtime_config audio_graph_io nlohmann_json::nlohmann_json)
+    if(MSVC)
+        target_compile_options(audio_device_session PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+        target_compile_options(realtime-cli PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    endif()
+endif()
+
 if(MSVC)
     target_compile_options(audio_core PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
     target_compile_options(audio_graph_io PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    target_compile_options(audio_realtime_config PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
 else()
     target_compile_options(audio_core PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(audio_graph_io PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(audio_realtime_config PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 add_executable(audio-cli apps/audio_cli/main.cpp)
@@ -92,10 +119,10 @@ if(BUILD_TESTING)
     add_test(NAME graph-tests COMMAND graph-tests)
 
     find_package(Threads REQUIRED)
-    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec stream-contract stream-nodes)
+    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec stream-contract stream-nodes realtime-bridge realtime-config)
         string(REPLACE "-" "_" test_source "${test_name}")
         add_executable(${test_name}-tests tests/${test_source}_tests.cpp)
-        target_link_libraries(${test_name}-tests PRIVATE audio_graph_io Threads::Threads)
+        target_link_libraries(${test_name}-tests PRIVATE audio_graph_io audio_realtime_config Threads::Threads)
         if(MSVC)
             target_compile_options(${test_name}-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
         else()
@@ -122,4 +149,11 @@ if(BUILD_TESTING)
         -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/stream-cli-tests
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stream_cli_tests.cmake)
     set_tests_properties(stream-cli-tests PROPERTIES TIMEOUT 60)
+    if(WIN32)
+        add_test(NAME realtime-cli-contract-tests COMMAND ${CMAKE_COMMAND}
+            -DREALTIME_CLI=$<TARGET_FILE:realtime-cli>
+            -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/realtime-cli-contract-tests
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/realtime_cli_tests.cmake)
+        set_tests_properties(realtime-cli-contract-tests PROPERTIES TIMEOUT 30)
+    endif()
 endif()
