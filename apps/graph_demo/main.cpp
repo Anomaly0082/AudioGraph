@@ -1,6 +1,7 @@
 #include "audioprocess/graph_codec.h"
 #include "audioprocess/graph_validator.h"
 #include "audioprocess/prototype_nodes.h"
+#include "audioprocess/streaming_graph_executor.h"
 
 #include <charconv>
 #include <cmath>
@@ -19,6 +20,7 @@ struct Options {
     std::filesystem::path graph_file, input, output;
     std::string describe;
     double gain_db{};
+    std::optional<std::uint32_t> block_size;
     bool list_nodes{}, validate{}, help{};
 };
 
@@ -33,7 +35,7 @@ Options parse_options(const std::vector<std::string>& args) {
         if (key == "--list-nodes") { options.list_nodes = true; continue; }
         if (key == "--validate") { options.validate = true; continue; }
         if (key != "--graph" && key != "--describe-node" && key != "--input" &&
-            key != "--output" && key != "--gain-db")
+            key != "--output" && key != "--gain-db" && key != "--block-size")
             throw ap::ExecutionError("invalid_arguments", "Unknown option: " + key);
         if (++i == args.size())
             throw ap::ExecutionError("invalid_arguments", "Missing value for: " + key);
@@ -43,6 +45,13 @@ Options parse_options(const std::vector<std::string>& args) {
         else if (key == "--describe-node") options.describe = value;
         else if (key == "--input") options.input = ap::path_from_utf8(value);
         else if (key == "--output") options.output = ap::path_from_utf8(value);
+        else if (key == "--block-size") {
+            std::uint32_t frames{};
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), frames);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || frames == 0 || frames > 65536)
+                throw ap::ExecutionError("invalid_arguments", "Block size must be an integer between 1 and 65536");
+            options.block_size = frames;
+        }
         else {
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), options.gain_db);
             if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !std::isfinite(options.gain_db))
@@ -56,6 +65,8 @@ Options parse_options(const std::vector<std::string>& args) {
     if (modes != 1) throw ap::ExecutionError("invalid_arguments", "Choose exactly one of --graph, --list-nodes, --describe-node or legacy --input/--output");
     if (options.validate && options.graph_file.empty())
         throw ap::ExecutionError("invalid_arguments", "--validate requires --graph");
+    if (options.block_size && options.graph_file.empty())
+        throw ap::ExecutionError("invalid_arguments", "--block-size requires a streaming --graph");
     if (legacy && (options.input.empty() || options.output.empty()))
         throw ap::ExecutionError("invalid_arguments", "Both --input and --output are required");
     return options;
@@ -67,7 +78,7 @@ int run(const std::vector<std::string>& args) {
         if (options.help) {
             std::cout << "graph-demo --list-nodes\n"
                          "graph-demo --describe-node <type>\n"
-                         "graph-demo --graph <graph.json> [--validate]\n"
+                         "graph-demo --graph <graph.json> [--validate] [--block-size <frames>]\n"
                          "graph-demo --input <in.wav> --output <out.wav> [--gain-db <dB>]\n";
             return 0;
         }
@@ -84,7 +95,13 @@ int run(const std::vector<std::string>& args) {
             ? ap::create_prototype_graph(std::filesystem::absolute(options.input),
                                          std::filesystem::absolute(options.output), options.gain_db)
             : ap::load_graph_json(options.graph_file, registry);
-        const auto validated = ap::validate_graph(graph, registry);
+        // 根据节点的执行契约选择策略，不根据具体节点类决定如何调度。
+        const bool streaming = !graph.nodes.empty() &&
+            registry.descriptor(graph.nodes.front().type_id).execution_domain == ap::ExecutionDomain::Streaming;
+        if (!streaming && options.block_size)
+            throw ap::ExecutionError("invalid_arguments", "--block-size is only valid for a streaming graph");
+        const auto validated = streaming ? ap::validate_stream_graph(graph, registry)
+                                         : ap::validate_graph(graph, registry);
         if (options.validate) {
             // 这里只验证配置，不创建节点、不打开音频、不检查运行时文件存在性。
             std::cout << "{\"schema_version\":1,\"success\":true,\"valid\":true,\"node_count\":"
@@ -92,6 +109,12 @@ int run(const std::vector<std::string>& args) {
             return 0;
         }
         ap::validate_prototype_file_targets(validated.graph);
+        if (streaming) {
+            auto executor = ap::StreamingGraphExecutor::compile(validated.graph, registry);
+            const auto result = executor.execute(options.block_size.value_or(256));
+            std::cout << ap::execution_result_json(validated.graph, result) << '\n';
+            return 0;
+        }
         auto executor = ap::SyncGraphExecutor::compile(validated.graph, registry);
         const auto result = executor.execute();
         if (legacy) {

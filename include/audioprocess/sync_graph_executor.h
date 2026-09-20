@@ -17,6 +17,7 @@ public:
 
 private:
     friend class SyncGraphExecutor;
+    friend class StreamingGraphExecutor;
     std::unordered_map<std::string, OutputValues> node_outputs_;
 };
 

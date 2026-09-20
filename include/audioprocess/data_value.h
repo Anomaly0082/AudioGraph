@@ -18,6 +18,7 @@ enum class DataType {
     Number,
     Text,
     FilePath,
+    AudioStream,  // 流端口的连接类型；借用块通过流接口传递，不存入 DataValue。
 };
 
 [[nodiscard]] constexpr const char* data_type_name(DataType type) noexcept {
@@ -30,6 +31,8 @@ enum class DataType {
         return "Text";
     case DataType::FilePath:
         return "FilePath";
+    case DataType::AudioStream:
+        return "AudioStream";
     }
     return "Unknown";
 }

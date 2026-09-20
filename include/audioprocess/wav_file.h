@@ -10,6 +10,7 @@
 #include <fstream>
 #include <optional>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace audioprocess {
@@ -52,6 +53,8 @@ public:
     WavFileSink& operator=(const WavFileSink&) = delete;
 
     void write(const AudioBlock& block);
+    // 只读交错 PCM 视图；允许流式节点写入，不需要 const_cast 或第二份音频缓冲。
+    void write(std::span<const float> samples, std::uint32_t frame_count);
     void finalize();
 
     [[nodiscard]] std::uint64_t frames_written() const noexcept { return frames_written_; }

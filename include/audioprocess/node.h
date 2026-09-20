@@ -27,6 +27,9 @@ enum class ParameterType {
     FilePath,
 };
 
+enum class StreamRole { None, Source, Processor, Sink };
+class IStreamNode;
+
 using ParameterValue = std::variant<double, std::string, bool, std::filesystem::path>;
 using ParameterMap = std::unordered_map<std::string, ParameterValue>;
 using InputValues = std::unordered_map<std::string, DataValue>;
@@ -58,6 +61,7 @@ struct NodeDescriptor {
     std::vector<PortDescriptor> inputs;
     std::vector<PortDescriptor> outputs;
     std::vector<ParameterDescriptor> parameters;
+    StreamRole stream_role{StreamRole::None};
 };
 
 struct ExecutionContext {
@@ -81,14 +85,18 @@ public:
 class NodeRegistry {
 public:
     using Factory = std::function<std::unique_ptr<ISyncNode>(const ParameterMap&)>;
+    using StreamFactory = std::function<std::unique_ptr<IStreamNode>(const ParameterMap&)>;
 
     void register_type(NodeDescriptor descriptor, Factory factory);
+    void register_stream_type(NodeDescriptor descriptor, StreamFactory factory);
 
     [[nodiscard]] const NodeDescriptor& descriptor(const std::string& type_id) const;
     // 仅检查配置和补齐默认值，不创建节点，也不访问文件或设备。
     [[nodiscard]] ParameterMap normalize_parameters(
         const std::string& type_id,
         const ParameterMap& parameters) const;
+    [[nodiscard]] std::unique_ptr<IStreamNode> create_stream(
+        const std::string& type_id, const ParameterMap& parameters) const;
     [[nodiscard]] std::unique_ptr<ISyncNode> create(
         const std::string& type_id,
         const ParameterMap& parameters) const;
@@ -98,6 +106,7 @@ private:
     struct Entry {
         NodeDescriptor descriptor;
         Factory factory;
+        StreamFactory stream_factory;
     };
 
     std::unordered_map<std::string, Entry> entries_;

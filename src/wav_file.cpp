@@ -275,23 +275,30 @@ WavFileSink::~WavFileSink() {
 }
 
 void WavFileSink::write(const AudioBlock& block) {
-    if (finalized_) {
-        throw std::logic_error("Cannot write to a finalized WAV file");
-    }
     if (!block.valid() || block.channel_count != format_.channel_count) {
         throw std::invalid_argument("WAV sink received an invalid or incompatible AudioBlock");
     }
-    if (block.frame_count > maximum_block_frames_) {
+    write(std::span<const float>{block.samples}, block.frame_count);
+}
+
+void WavFileSink::write(std::span<const float> samples, std::uint32_t frame_count) {
+    if (finalized_) {
+        throw std::logic_error("Cannot write to a finalized WAV file");
+    }
+    if (samples.size() != static_cast<std::size_t>(frame_count) * format_.channel_count) {
+        throw std::invalid_argument("WAV sink received an incompatible sample count");
+    }
+    if (frame_count > maximum_block_frames_) {
         throw std::invalid_argument("AudioBlock exceeds WAV sink capacity");
     }
 
-    const auto byte_count = block.sample_count() * 2U;
+    const auto byte_count = samples.size() * 2U;
     if (data_bytes_written_ + byte_count > std::numeric_limits<std::uint32_t>::max() - 36U) {
         throw std::runtime_error("M0 WAV writer does not support files larger than 4 GiB");
     }
 
-    for (std::size_t index = 0; index < block.sample_count(); ++index) {
-        const auto value = static_cast<std::uint16_t>(float_to_pcm16(block.samples[index]));
+    for (std::size_t index = 0; index < samples.size(); ++index) {
+        const auto value = static_cast<std::uint16_t>(float_to_pcm16(samples[index]));
         scratch_[index * 2] = static_cast<std::byte>(value & 0xFFU);
         scratch_[index * 2 + 1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
     }
@@ -300,7 +307,7 @@ void WavFileSink::write(const AudioBlock& block) {
         reinterpret_cast<const char*>(scratch_.data()),
         static_cast<std::streamsize>(byte_count));
 
-    frames_written_ += block.frame_count;
+    frames_written_ += frame_count;
     data_bytes_written_ += byte_count;
 }
 

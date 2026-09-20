@@ -4,6 +4,7 @@
 #include "audioprocess/wav_file.h"
 #include "audioprocess/detail/exclusive_file.h"
 #include "audioprocess/execution_error.h"
+#include "audioprocess/streaming_nodes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -336,6 +337,7 @@ NodeRegistry create_prototype_node_registry() {
     registry.register_type(TextOutputNode::make_descriptor(), [](const ParameterMap& parameters) {
         return std::make_unique<TextOutputNode>(parameters);
     });
+    register_streaming_node_types(registry);
     return registry;
 }
 
@@ -345,11 +347,12 @@ void validate_prototype_file_targets(const GraphDefinition& graph) {
     std::vector<Target> outputs;
     for (const auto& node : graph.nodes) {
         if (node.type_id != "wav_input" && node.type_id != "wav_output" &&
-            node.type_id != "text_output") { continue; }
+            node.type_id != "text_output" && node.type_id != "wav_stream_input" &&
+            node.type_id != "wav_stream_output") { continue; }
         try {
             const auto path = path_parameter(node.parameters, "path");
             const auto normalized = std::filesystem::weakly_canonical(std::filesystem::absolute(path));
-            if (node.type_id == "wav_input") {
+            if (node.type_id == "wav_input" || node.type_id == "wav_stream_input") {
                 inputs.push_back({node.id, normalized});
             } else {
                 // symlink_status 也拒绝悬空符号链接；真正创建时仍使用 O_EXCL 防止竞态。

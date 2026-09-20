@@ -1,5 +1,6 @@
 #include "audioprocess/node.h"
 #include "audioprocess/execution_error.h"
+#include "audioprocess/streaming_node.h"
 
 #include <algorithm>
 #include <cmath>
@@ -48,21 +49,15 @@ void validate_ports(const std::vector<PortDescriptor>& ports) {
             throw ExecutionError("invalid_descriptor", "Port ids must be nonempty and unique", {}, port.id);
         }
         switch (port.type) {
-        case DataType::Audio: case DataType::Number: case DataType::Text: case DataType::FilePath: break;
+        case DataType::Audio: case DataType::Number: case DataType::Text: case DataType::FilePath:
+        case DataType::AudioStream: break;
         default: throw ExecutionError("invalid_descriptor", "Unknown port data type", {}, port.id);
         }
     }
 }
 
-}  // namespace
-
-void NodeRegistry::register_type(NodeDescriptor descriptor, Factory factory) {
-    if (descriptor.type_id.empty() || !factory) {
-        throw ExecutionError("invalid_descriptor", "Node type id and factory must be provided");
-    }
-    if (entries_.contains(descriptor.type_id)) {
-        throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
-    }
+void validate_descriptor(const NodeDescriptor& descriptor) {
+    if (descriptor.type_id.empty()) throw ExecutionError("invalid_descriptor", "Node type id must be provided");
     switch (descriptor.execution_domain) {
     case ExecutionDomain::Synchronous: case ExecutionDomain::Realtime:
     case ExecutionDomain::Asynchronous: case ExecutionDomain::Streaming: break;
@@ -99,8 +94,70 @@ void NodeRegistry::register_type(NodeDescriptor descriptor, Factory factory) {
         }
         if (parameter.default_value) validate_parameter_value(parameter, *parameter.default_value);
     }
+}
+
+bool matching_ports(const std::vector<PortDescriptor>& expected, const std::vector<PortDescriptor>& received) {
+    if (expected.size() != received.size()) return false;
+    for (const auto& port : expected) {
+        const auto found = std::ranges::find(received, port.id, &PortDescriptor::id);
+        if (found == received.end() || found->type != port.type || found->required != port.required) return false;
+    }
+    return true;
+}
+
+void validate_instance_descriptor(const NodeDescriptor& expected, const NodeDescriptor& actual) {
+    if (actual.type_id != expected.type_id || actual.execution_domain != expected.execution_domain ||
+        actual.stream_role != expected.stream_role || !matching_ports(expected.inputs, actual.inputs) ||
+        !matching_ports(expected.outputs, actual.outputs)) {
+        throw ExecutionError("invalid_factory", "Node factory returned a different execution contract: " + expected.type_id);
+    }
+}
+
+bool only_stream_port(const std::vector<PortDescriptor>& ports) {
+    return ports.size() == 1 && ports[0].type == DataType::AudioStream && ports[0].required;
+}
+
+}  // namespace
+
+void NodeRegistry::register_type(NodeDescriptor descriptor, Factory factory) {
+    validate_descriptor(descriptor);
+    if (!factory) throw ExecutionError("invalid_descriptor", "Node factory must be provided");
+    if (entries_.contains(descriptor.type_id)) {
+        throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
+    }
+    const auto is_stream = [](const PortDescriptor& port) { return port.type == DataType::AudioStream; };
+    if (descriptor.execution_domain == ExecutionDomain::Streaming || descriptor.stream_role != StreamRole::None ||
+        std::ranges::any_of(descriptor.inputs, is_stream) || std::ranges::any_of(descriptor.outputs, is_stream)) {
+        throw ExecutionError("invalid_descriptor", "Streaming nodes require register_stream_type");
+    }
     const auto type_id = descriptor.type_id;
-    entries_.emplace(type_id, Entry{std::move(descriptor), std::move(factory)});
+    entries_.emplace(type_id, Entry{std::move(descriptor), std::move(factory), {}});
+}
+
+void NodeRegistry::register_stream_type(NodeDescriptor descriptor, StreamFactory factory) {
+    validate_descriptor(descriptor);
+    if (!factory || descriptor.execution_domain != ExecutionDomain::Streaming) {
+        throw ExecutionError("invalid_descriptor", "A Streaming descriptor and stream factory are required");
+    }
+    if (entries_.contains(descriptor.type_id)) {
+        throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
+    }
+    bool valid_role = false;
+    switch (descriptor.stream_role) {
+    case StreamRole::Source:
+        valid_role = descriptor.inputs.empty() && only_stream_port(descriptor.outputs); break;
+    case StreamRole::Processor:
+        valid_role = only_stream_port(descriptor.inputs) && only_stream_port(descriptor.outputs); break;
+    case StreamRole::Sink:
+        valid_role = only_stream_port(descriptor.inputs) && std::ranges::all_of(descriptor.outputs, [](const auto& port) {
+            return port.type == DataType::Number || port.type == DataType::Text || port.type == DataType::FilePath;
+        });
+        break;
+    case StreamRole::None: break;
+    }
+    if (!valid_role) throw ExecutionError("invalid_descriptor", "Stream role and ports do not match the linear stream contract");
+    const auto type_id = descriptor.type_id;
+    entries_.emplace(type_id, Entry{std::move(descriptor), {}, std::move(factory)});
 }
 
 const NodeDescriptor& NodeRegistry::descriptor(const std::string& type_id) const {
@@ -134,26 +191,33 @@ ParameterMap NodeRegistry::normalize_parameters(const std::string& type_id, cons
 std::unique_ptr<ISyncNode> NodeRegistry::create(const std::string& type_id, const ParameterMap& parameters) const {
     auto normalized = normalize_parameters(type_id, parameters);
     const auto& entry = entries_.at(type_id);
+    if (!entry.factory || entry.descriptor.execution_domain != ExecutionDomain::Synchronous) {
+        throw ExecutionError("unsupported_execution_domain", "Node does not support synchronous whole-value creation: " + type_id);
+    }
     auto instance = entry.factory(normalized);
     if (!instance) throw ExecutionError("invalid_factory", "Node factory returned null: " + type_id);
-    const auto& actual = instance->descriptor();
-    if (actual.type_id != type_id) {
-        throw ExecutionError("invalid_factory", "Node factory returned a different node type: " + type_id);
-    }
-    const auto matching_ports = [](const auto& expected, const auto& received) {
-        if (expected.size() != received.size()) return false;
-        for (const auto& port : expected) {
-            const auto found = std::ranges::find(received, port.id, &PortDescriptor::id);
-            if (found == received.end() || found->type != port.type || found->required != port.required) return false;
-        }
-        return true;
-    };
-    if (actual.execution_domain != entry.descriptor.execution_domain ||
-        !matching_ports(entry.descriptor.inputs, actual.inputs) ||
-        !matching_ports(entry.descriptor.outputs, actual.outputs)) {
-        throw ExecutionError("invalid_factory", "Node factory returned a different execution contract: " + type_id);
-    }
+    validate_instance_descriptor(entry.descriptor, instance->descriptor());
     // 参数 Schema 以 Registry 为唯一权威；实例描述中的展示文案不参与运行时校验。
+    return instance;
+}
+
+std::unique_ptr<IStreamNode> NodeRegistry::create_stream(const std::string& type_id, const ParameterMap& parameters) const {
+    auto normalized = normalize_parameters(type_id, parameters);
+    const auto& entry = entries_.at(type_id);
+    if (!entry.stream_factory || entry.descriptor.execution_domain != ExecutionDomain::Streaming) {
+        throw ExecutionError("unsupported_execution_domain", "Node does not support streaming creation: " + type_id);
+    }
+    auto instance = entry.stream_factory(normalized);
+    if (!instance) throw ExecutionError("invalid_factory", "Stream factory returned null: " + type_id);
+    validate_instance_descriptor(entry.descriptor, instance->descriptor());
+    bool role_matches = false;
+    switch (entry.descriptor.stream_role) {
+    case StreamRole::Source: role_matches = dynamic_cast<IAudioStreamSource*>(instance.get()) != nullptr; break;
+    case StreamRole::Processor: role_matches = dynamic_cast<IAudioStreamProcessor*>(instance.get()) != nullptr; break;
+    case StreamRole::Sink: role_matches = dynamic_cast<IAudioStreamSink*>(instance.get()) != nullptr; break;
+    case StreamRole::None: break;
+    }
+    if (!role_matches) throw ExecutionError("invalid_factory", "Stream factory did not implement the declared role: " + type_id);
     return instance;
 }
 

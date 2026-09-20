@@ -98,8 +98,16 @@ Json descriptor_json(const NodeDescriptor& node) {
     case ExecutionDomain::Asynchronous: domain = "asynchronous"; break;
     case ExecutionDomain::Streaming: domain = "streaming"; break;
     }
+    const char* role = "none";
+    switch (node.stream_role) {
+    case StreamRole::None: break;
+    case StreamRole::Source: role = "source"; break;
+    case StreamRole::Processor: role = "processor"; break;
+    case StreamRole::Sink: role = "sink"; break;
+    }
     return {{"typeId", node.type_id}, {"displayName", node.display_name},
             {"description", node.description}, {"execution_domain", domain},
+            {"stream_role", role},
             {"inputs", inputs}, {"outputs", outputs}, {"parameters", parameters}};
 }
 

@@ -17,6 +17,8 @@ add_library(audio_core STATIC
     src/processing_chain.cpp
     src/prototype_nodes.cpp
     src/sync_graph_executor.cpp
+    src/streaming_graph_executor.cpp
+    src/streaming_nodes.cpp
     src/wav_file.cpp
 )
 
@@ -90,7 +92,7 @@ if(BUILD_TESTING)
     add_test(NAME graph-tests COMMAND graph-tests)
 
     find_package(Threads REQUIRED)
-    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec)
+    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec stream-contract stream-nodes)
         string(REPLACE "-" "_" test_source "${test_name}")
         add_executable(${test_name}-tests tests/${test_source}_tests.cpp)
         target_link_libraries(${test_name}-tests PRIVATE audio_graph_io Threads::Threads)
@@ -106,4 +108,18 @@ if(BUILD_TESTING)
         -DGRAPH_DEMO=$<TARGET_FILE:graph-demo>
         -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/cli-contract-tests
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_contract_tests.cmake)
+
+    add_executable(stream-cli-fixture tests/stream_cli_fixture.cpp)
+    target_link_libraries(stream-cli-fixture PRIVATE audio_core)
+    if(MSVC)
+        target_compile_options(stream-cli-fixture PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    else()
+        target_compile_options(stream-cli-fixture PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME stream-cli-tests COMMAND ${CMAKE_COMMAND}
+        -DGRAPH_DEMO=$<TARGET_FILE:graph-demo>
+        -DFIXTURE=$<TARGET_FILE:stream-cli-fixture>
+        -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/stream-cli-tests
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stream_cli_tests.cmake)
+    set_tests_properties(stream-cli-tests PROPERTIES TIMEOUT 60)
 endif()

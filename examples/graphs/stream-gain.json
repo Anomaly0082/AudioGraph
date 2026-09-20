@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "input", "type": "wav_stream_input", "parameters": {"path": "input.wav"}},
+    {"id": "gain", "type": "stream_gain", "parameters": {"gain_db": -6}},
+    {"id": "output", "type": "wav_stream_output", "parameters": {"path": "stream-gain.wav"}}
+  ],
+  "connections": [
+    {"from": {"node": "input", "port": "audio"}, "to": {"node": "gain", "port": "audio"}},
+    {"from": {"node": "gain", "port": "audio"}, "to": {"node": "output", "port": "audio"}}
+  ],
+  "exports": [
+    {"name": "file", "node": "output", "port": "path"},
+    {"name": "frames", "node": "output", "port": "frames_written"},
+    {"name": "clipped_samples", "node": "output", "port": "clipped_samples"}
+  ]
+}
