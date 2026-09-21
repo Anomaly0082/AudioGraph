@@ -30,6 +30,16 @@ enum class ParameterType {
 enum class StreamRole { None, Source, Processor, Sink };
 class IStreamNode;
 
+enum class RealtimeRole { None, Source, Processor, Sink };
+struct RealtimeCapabilities {
+    AudioFormat format{48000, 1};
+    std::uint32_t maximum_block_frames{65536};
+    bool supports_variable_blocks{true};
+    bool offline_drivable{true};
+    friend constexpr bool operator==(const RealtimeCapabilities&, const RealtimeCapabilities&) = default;
+};
+class IRealtimeProcessor;
+
 using ParameterValue = std::variant<double, std::string, bool, std::filesystem::path>;
 using ParameterMap = std::unordered_map<std::string, ParameterValue>;
 using InputValues = std::unordered_map<std::string, DataValue>;
@@ -62,6 +72,8 @@ struct NodeDescriptor {
     std::vector<PortDescriptor> outputs;
     std::vector<ParameterDescriptor> parameters;
     StreamRole stream_role{StreamRole::None};
+    RealtimeRole realtime_role{RealtimeRole::None};
+    std::optional<RealtimeCapabilities> realtime_capabilities;
 };
 
 struct ExecutionContext {
@@ -86,9 +98,13 @@ class NodeRegistry {
 public:
     using Factory = std::function<std::unique_ptr<ISyncNode>(const ParameterMap&)>;
     using StreamFactory = std::function<std::unique_ptr<IStreamNode>(const ParameterMap&)>;
+    using RealtimeFactory = std::function<std::unique_ptr<IRealtimeProcessor>(const ParameterMap&)>;
 
     void register_type(NodeDescriptor descriptor, Factory factory);
     void register_stream_type(NodeDescriptor descriptor, StreamFactory factory);
+    // 端点只声明设备 binding，不能通过工厂在编译/音频回调中打开设备。
+    void register_realtime_endpoint(NodeDescriptor descriptor);
+    void register_realtime_type(NodeDescriptor descriptor, RealtimeFactory factory);
 
     [[nodiscard]] const NodeDescriptor& descriptor(const std::string& type_id) const;
     // 仅检查配置和补齐默认值，不创建节点，也不访问文件或设备。
@@ -96,6 +112,8 @@ public:
         const std::string& type_id,
         const ParameterMap& parameters) const;
     [[nodiscard]] std::unique_ptr<IStreamNode> create_stream(
+        const std::string& type_id, const ParameterMap& parameters) const;
+    [[nodiscard]] std::unique_ptr<IRealtimeProcessor> create_realtime(
         const std::string& type_id, const ParameterMap& parameters) const;
     [[nodiscard]] std::unique_ptr<ISyncNode> create(
         const std::string& type_id,
@@ -107,6 +125,7 @@ private:
         NodeDescriptor descriptor;
         Factory factory;
         StreamFactory stream_factory;
+        RealtimeFactory realtime_factory;
     };
 
     std::unordered_map<std::string, Entry> entries_;

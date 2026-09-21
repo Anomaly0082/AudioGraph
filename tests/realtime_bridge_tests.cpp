@@ -1,4 +1,5 @@
 #include "audioprocess/realtime_bridge.h"
+#include "audioprocess/realtime_graph_executor.h"
 
 #include <algorithm>
 #include <array>
@@ -87,6 +88,37 @@ void operator delete[](void* memory, std::align_val_t, const std::nothrow_t&) no
 namespace {
 using namespace audioprocess;
 
+struct PreparedPlan {
+    static NodeRegistry registry() {
+        NodeRegistry nodes;
+        register_realtime_nodes(nodes);
+        return nodes;
+    }
+    explicit PreparedPlan(float gain_db = 0.0F)
+        : plan(RealtimeGraphExecutor::compile(make_realtime_graph("test-input", "test-output", gain_db), registry())) {
+        plan.prepare({48000, 1}, 256);
+    }
+    RealtimeGraphExecutor plan;
+};
+
+class FailSecondBlock final : public IRealtimeProcessor {
+public:
+    FailSecondBlock(NodeDescriptor descriptor, std::shared_ptr<unsigned> calls)
+        : descriptor_(std::move(descriptor)), total_calls_(std::move(calls)) {}
+    const NodeDescriptor& descriptor() const noexcept override { return descriptor_; }
+    void prepare(AudioFormat, std::uint32_t) override { calls_ = 0; }
+    RealtimeProcessStatus process(std::span<float> samples) noexcept override {
+        ++*total_calls_;
+        if (++calls_ >= 2) return RealtimeProcessStatus::NodeFailed;
+        std::fill(samples.begin(), samples.end(), 0.5F);
+        return RealtimeProcessStatus::Ok;
+    }
+private:
+    NodeDescriptor descriptor_;
+    std::shared_ptr<unsigned> total_calls_;
+    unsigned calls_{};
+};
+
 void require(bool condition, const std::string& message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -105,7 +137,8 @@ void valid_stereo(const float* output, std::size_t frames) {
 }
 
 void test_startup_underflow_and_recovery() {
-    RealtimeBridge bridge;
+    PreparedPlan prepared;
+    RealtimeBridge bridge({}, &prepared.plan);
     std::vector<float> output(256 * 2, 0.75F);
     bridge.render(output.data(), 256);
     require(silent(output), "Unprimed playback did not clear output to silence");
@@ -136,7 +169,8 @@ void test_drop_new_and_mute() {
     RealtimeBridgeConfig config;
     config.capacity_frames = 1024;
     config.target_frames = 256;
-    RealtimeBridge bridge(config);
+    PreparedPlan prepared;
+    RealtimeBridge bridge(config, &prepared.plan);
     std::vector<float> original(1024, 0.2F);
     std::vector<float> discarded(1024, -0.8F);
     std::vector<float> output(128 * 2);
@@ -157,29 +191,21 @@ void test_drop_new_and_mute() {
     require(near(output.back(), 0.2F), "Unmute did not resume valid captured audio");
 }
 
-void test_gain_ramp_clipping_and_invalid_values() {
-    RealtimeBridge bridge;
+void test_graph_gain_clipping_and_invalid_samples() {
+    PreparedPlan prepared(-6.0F);
+    RealtimeBridge bridge({}, &prepared.plan);
     std::vector<float> input(4096, 0.25F);
     std::vector<float> output(600 * 2);
     bridge.capture(input.data(), 4096);
-    require(bridge.set_gain_db(-6.0F), "Valid gain was rejected");
-    require(!bridge.set_gain_db(std::numeric_limits<float>::quiet_NaN()) &&
-        !bridge.set_gain_db(std::numeric_limits<float>::infinity()) &&
-        !bridge.set_gain_db(-24.01F) && !bridge.set_gain_db(12.01F), "Invalid gain was accepted");
     bridge.render(output.data(), 600);
     const float target = 0.25F * std::pow(10.0F, -6.0F / 20.0F);
-    require(output[0] > 0.24F && output[0] <= 0.25F,
-        "Gain switched abruptly instead of beginning a ramp");
-    require(near(output[2 * 500], target), "Gain did not reach target after its 10 ms ramp");
-    for (std::size_t i = 1; i < 480; ++i) {
-        require(output[2 * i] <= output[2 * (i - 1)] &&
-            std::abs(output[2 * i] - output[2 * (i - 1)]) < 0.001F, "Gain ramp is discontinuous");
-    }
+    // P4 参数在prepare时固定；不再有Bridge专属动态增益/480帧坡度接口。
+    require(std::ranges::all_of(output, [target](float value) { return near(value, target); }),
+        "Prepared Graph gain was not applied to all chunks of a large device callback");
     valid_stereo(output.data(), 600);
 
-    RealtimeBridgeConfig loud;
-    loud.gain_db = 12.0F;
-    RealtimeBridge clipping(loud);
+    PreparedPlan loud(12.0F);
+    RealtimeBridge clipping({}, &loud.plan);
     std::fill(input.begin(), input.end(), 0.75F);
     clipping.capture(input.data(), 4096);
     clipping.render(output.data(), 600);
@@ -187,7 +213,8 @@ void test_gain_ramp_clipping_and_invalid_values() {
         "Output ceiling did not saturate amplified audio");
     require(clipping.stats().clipped_samples == 600, "Clipping should count mono frames, not stereo copies");
 
-    RealtimeBridge sanitized;
+    PreparedPlan sanitize_plan;
+    RealtimeBridge sanitized({}, &sanitize_plan.plan);
     input[0] = std::numeric_limits<float>::quiet_NaN();
     input[1] = std::numeric_limits<float>::infinity();
     input[2] = -std::numeric_limits<float>::infinity();
@@ -195,7 +222,8 @@ void test_gain_ramp_clipping_and_invalid_values() {
     sanitized.render(output.data(), 600);
     valid_stereo(output.data(), 600);
     require(sanitized.stats().sanitized_samples == 3, "Non-finite capture samples were not counted");
-    RealtimeBridge null_input;
+    PreparedPlan silent_plan;
+    RealtimeBridge null_input({}, &silent_plan.plan);
     null_input.capture(nullptr, 2048);
     null_input.render(output.data(), 600);
     require(silent(output), "Null capture input was not treated as silence");
@@ -214,10 +242,9 @@ void test_configuration_and_render_arguments() {
     config = {}; config.capacity_frames = 2; reject(config);
     config = {}; config.target_frames = 1; reject(config);
     config = {}; config.target_frames = 4095; reject(config);
-    config = {}; config.gain_db = std::numeric_limits<float>::quiet_NaN(); reject(config);
-    config = {}; config.gain_db = 13.0F; reject(config);
 
-    RealtimeBridge bridge;
+    PreparedPlan prepared;
+    RealtimeBridge bridge({}, &prepared.plan);
     std::array<float, 32> output{};
     output.fill(0.75F);
     bridge.render(nullptr, 0, 0); // 零帧无操作，不访问指针。
@@ -235,7 +262,8 @@ void test_configuration_and_render_arguments() {
 }
 
 void test_callback_new_allocations() {
-    RealtimeBridge bridge;
+    PreparedPlan prepared;
+    RealtimeBridge bridge({}, &prepared.plan);
     std::array<float, 256> input{};
     std::array<float, 512> output{};
     input.fill(0.25F);
@@ -245,7 +273,6 @@ void test_callback_new_allocations() {
         bridge.capture(input.data(), 256);
         bridge.render(output.data(), 256);
         if (iteration % 100 == 0) {
-            static_cast<void>(bridge.set_gain_db(iteration % 200 == 0 ? -6.0F : 0.0F));
             bridge.set_muted(iteration % 400 == 0);
         }
         static_cast<void>(bridge.stats());
@@ -255,7 +282,8 @@ void test_callback_new_allocations() {
 }
 
 void test_concurrent_spsc_callbacks() {
-    RealtimeBridge bridge;
+    PreparedPlan prepared;
+    RealtimeBridge bridge({}, &prepared.plan);
     std::atomic<int> ready{};
     std::atomic_bool valid{true};
     auto rendezvous = [&] {
@@ -297,7 +325,6 @@ void test_concurrent_spsc_callbacks() {
     });
     std::thread control([&] {
         for (int iteration = 0; iteration < 10000; ++iteration) {
-            if (!bridge.set_gain_db(iteration % 2 == 0 ? -6.0F : 0.0F)) valid.store(false);
             bridge.set_muted(iteration % 3 == 0);
             const auto snapshot = bridge.stats();
             if (snapshot.queued_frames > 4096 || !std::isfinite(snapshot.queue_latency_ms)) valid.store(false);
@@ -311,7 +338,8 @@ void test_concurrent_spsc_callbacks() {
 
 void test_drift_simulation() {
     for (const double drift : {-0.003, 0.003}) {
-        RealtimeBridge bridge;
+        PreparedPlan prepared;
+        RealtimeBridge bridge({}, &prepared.plan);
         std::vector<float> seed(960, 0.25F);
         std::array<float, 256> input{};
         std::array<float, 256> output{};
@@ -352,7 +380,8 @@ void test_drift_simulation() {
 }
 
 void test_stopped_reset() {
-    RealtimeBridge bridge;
+    PreparedPlan prepared;
+    RealtimeBridge bridge({}, &prepared.plan);
     std::vector<float> input(2048, 0.3F);
     std::vector<float> output(512, 1.0F);
     bridge.capture(input.data(), 2048);
@@ -362,18 +391,68 @@ void test_stopped_reset() {
     bridge.render(output.data(), 256);
     require(silent(output), "Reset replayed stale audio from previous session");
 }
+
+void test_graph_failure_silences_and_latches() {
+    auto registry = PreparedPlan::registry();
+    NodeDescriptor descriptor;
+    descriptor.type_id = "fail_second";
+    descriptor.execution_domain = ExecutionDomain::Realtime;
+    descriptor.realtime_role = RealtimeRole::Processor;
+    descriptor.realtime_capabilities = RealtimeCapabilities{};
+    descriptor.inputs = {{"audio", DataType::AudioStream}};
+    descriptor.outputs = {{"audio", DataType::AudioStream}};
+    auto total_calls = std::make_shared<unsigned>(0);
+    registry.register_realtime_type(descriptor, [descriptor, total_calls](const ParameterMap&) {
+        return std::make_unique<FailSecondBlock>(descriptor, total_calls);
+    });
+    auto graph = make_realtime_graph("test-input", "test-output");
+    auto& connection = graph.connections.front();
+    const auto target = connection.target_node;
+    const auto target_port = connection.target_port;
+    connection.target_node = "broken";
+    connection.target_port = "audio";
+    graph.nodes.push_back({"broken", "fail_second", {}});
+    graph.connections.push_back({"broken", "audio", target, target_port});
+    auto plan = RealtimeGraphExecutor::compile(graph, registry);
+    plan.prepare({48000, 1}, 256);
+    RealtimeBridge bridge({}, &plan);
+    std::vector<float> input(4096, 0.25F);
+    std::vector<float> output(600 * 2, 0.75F);
+    bridge.capture(input.data(), 4096);
+    const auto before = allocation_probe::count;
+    allocation_probe::enabled = true;
+    bridge.render(output.data(), 600);
+    allocation_probe::enabled = false;
+    require(bridge.faulted() && silent(output) && *total_calls == 2,
+        "Mid-callback Graph failure did not erase earlier output and latch the fault");
+    require(allocation_probe::count == before, "Bridge callback allocated while reporting a Graph fault");
+    const auto fault = bridge.process_fault();
+    require(fault.status == RealtimeProcessStatus::NodeFailed && plan.node_id(fault.node_index) == "broken",
+        "Bridge fault lost its processor status/index");
+    std::fill(output.begin(), output.end(), 0.75F);
+    bridge.render(output.data(), 600);
+    require(silent(output) && *total_calls == 2, "Faulted bridge kept invoking the Graph");
+
+    // 两者必须在回调停止时分别重置；Bridge.reset本身不承担节点新建。
+    bridge.reset();
+    plan.prepare({48000, 1}, 256);
+    bridge.capture(input.data(), 2048);
+    bridge.render(output.data(), 128);
+    require(!bridge.faulted() && near(output[0], 0.5F), "New prepared task could not recover after a fault");
+}
 } // namespace
 
 int main() {
     try {
         test_startup_underflow_and_recovery();
         test_drop_new_and_mute();
-        test_gain_ramp_clipping_and_invalid_values();
+        test_graph_gain_clipping_and_invalid_samples();
         test_configuration_and_render_arguments();
         test_callback_new_allocations();
         test_concurrent_spsc_callbacks();
         test_drift_simulation();
         test_stopped_reset();
+        test_graph_failure_silences_and_latches();
         std::cout << "Independent realtime bridge tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

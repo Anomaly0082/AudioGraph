@@ -91,26 +91,44 @@ class RealtimeSession::Impl {
 public:
     ~Impl() { stop(); }
 
-    void start(const std::string& input_id, const std::string& output_id,
+    void start(const GraphDefinition& graph, const NodeRegistry& registry,
                const RealtimeSessionConfig& config) {
         if (running_ || capture_initialized_ || playback_initialized_) {
             throw ExecutionError("invalid_lifecycle", "Realtime session is already started");
-        }
-        if (input_id.empty() || output_id.empty() || input_id.find('\0') != std::string::npos ||
-            output_id.find('\0') != std::string::npos) {
-            throw ExecutionError("invalid_device_id", "Explicit nonempty input and output IDs are required");
         }
         if (config.bridge.sample_rate != 48000 || config.device_period_frames < 32 ||
             config.device_period_frames > 2048) {
             throw ExecutionError("invalid_realtime_config", "Session requires 48000 Hz and device period 32..2048 frames");
         }
+        if (config.graph_block_frames == 0 || config.graph_block_frames > 65536) {
+            throw ExecutionError("invalid_block_size", "Realtime graph block frames must be between 1 and 65536");
+        }
+        // 必须先完成所有图校验、工厂创建和 prepare，再建立任何设备上下文或打开端点。
+        auto next_plan = std::make_unique<RealtimeGraphExecutor>(RealtimeGraphExecutor::compile(graph, registry));
+        next_plan->prepare({48000, 1}, config.graph_block_frames);
+        std::vector<std::string> next_processor_ids;
+        for (std::uint32_t index = 0; !next_plan->node_id(index).empty(); ++index) {
+            next_processor_ids.emplace_back(next_plan->node_id(index));
+        }
+        const auto& input_id = next_plan->input_device();
+        const auto& output_id = next_plan->output_device();
+        if (input_id.empty() || output_id.empty() || input_id.find('\0') != std::string::npos ||
+            output_id.find('\0') != std::string::npos) {
+            throw ExecutionError("invalid_device_id", "Explicit nonempty input and output IDs are required");
+        }
         auto bridge_config = config.bridge;
         bridge_config.muted = config.probe || bridge_config.muted;
-        try { bridge_ = std::make_unique<RealtimeBridge>(bridge_config); }
+        std::unique_ptr<RealtimeBridge> next_bridge;
+        try { next_bridge = std::make_unique<RealtimeBridge>(bridge_config, next_plan.get()); }
         catch (const std::invalid_argument& error) {
             throw ExecutionError("invalid_realtime_config", error.what());
         }
+        // move unique_ptr 不移动计划对象本身，已绑定的 Bridge 借用指针保持有效。
+        plan_ = std::move(next_plan);
+        bridge_ = std::move(next_bridge);
+        processor_ids_ = std::move(next_processor_ids);
         last_stats_ = {};
+        last_process_fault_ = {};
         info_ = {};
         fault_.store(false, std::memory_order_relaxed);
         expected_stop_.store(false, std::memory_order_release);
@@ -170,14 +188,49 @@ public:
         if (capture_initialized_) { ma_device_uninit(&capture_); capture_initialized_ = false; }
         if (playback_initialized_) { ma_device_uninit(&playback_); playback_initialized_ = false; }
         running_ = false;
-        if (bridge_) { last_stats_ = bridge_->stats(); bridge_.reset(); }
+        if (bridge_) {
+            last_stats_ = bridge_->stats();
+            last_process_fault_ = bridge_->process_fault();
+            bridge_.reset();
+        }
+        // 节点 ID 已在启动前复制为独立元数据；stop 不分配字符串，并及时销毁节点资源。
+        plan_.reset();
         context_.close();
     }
 
     RealtimeBridgeStats snapshot() const noexcept { return bridge_ ? bridge_->stats() : last_stats_; }
     RealtimeSessionInfo session_info() const noexcept { return info_; }
-    bool faulted() const noexcept { return fault_.load(std::memory_order_acquire); }
+    RealtimeProcessResult process_fault() const noexcept {
+        return bridge_ ? bridge_->process_fault() : last_process_fault_;
+    }
+    bool faulted() const noexcept {
+        return fault_.load(std::memory_order_acquire) || process_fault().status != RealtimeProcessStatus::Ok;
+    }
     bool is_running() const noexcept { return running_; }
+    std::string fault_code() const {
+        switch (process_fault().status) {
+        case RealtimeProcessStatus::NotPrepared: return "realtime_plan_not_prepared";
+        case RealtimeProcessStatus::InvalidBlock: return "invalid_realtime_block";
+        case RealtimeProcessStatus::NonFiniteInput: return "non_finite_realtime_input";
+        case RealtimeProcessStatus::NodeFailed: return "realtime_node_failed";
+        case RealtimeProcessStatus::NonFiniteOutput: return "non_finite_realtime_output";
+        case RealtimeProcessStatus::Ok: break;
+        }
+        return fault_.load(std::memory_order_acquire) ? "device_fault" : "";
+    }
+    std::string fault_node_id() const {
+        const auto index = process_fault().node_index;
+        return index < processor_ids_.size() ? processor_ids_[index] : "";
+    }
+    std::string fault_message() const {
+        const auto code = fault_code();
+        if (code.empty()) { return {}; }
+        if (code == "device_fault") {
+            return "Selected WASAPI device stopped, rerouted or was interrupted; automatic fallback is disabled";
+        }
+        const auto node = fault_node_id();
+        return "Realtime graph stopped with " + code + (node.empty() ? "" : " at node '" + node + "'");
+    }
 
 private:
     void configure_common(ma_device_config& config, std::uint32_t period_frames) {
@@ -213,8 +266,11 @@ private:
     WasapiContext context_;
     ma_device capture_{};
     ma_device playback_{};
+    std::unique_ptr<RealtimeGraphExecutor> plan_;
+    std::vector<std::string> processor_ids_;
     std::unique_ptr<RealtimeBridge> bridge_;
     RealtimeBridgeStats last_stats_{};
+    RealtimeProcessResult last_process_fault_{};
     RealtimeSessionInfo info_{};
     std::atomic<bool> expected_stop_{true};
     std::atomic<bool> fault_{false};
@@ -242,15 +298,15 @@ RealtimeDeviceCatalog RealtimeSession::enumerate_devices() {
     return catalog;
 }
 
-void RealtimeSession::start(const std::string& input_id, const std::string& output_id,
-                            const RealtimeSessionConfig& config) { impl_->start(input_id, output_id, config); }
+void RealtimeSession::start(const GraphDefinition& graph, const NodeRegistry& registry,
+                            const RealtimeSessionConfig& config) { impl_->start(graph, registry, config); }
 void RealtimeSession::stop() noexcept { impl_->stop(); }
 RealtimeBridgeStats RealtimeSession::snapshot() const noexcept { return impl_->snapshot(); }
 RealtimeSessionInfo RealtimeSession::session_info() const noexcept { return impl_->session_info(); }
 bool RealtimeSession::faulted() const noexcept { return impl_->faulted(); }
 bool RealtimeSession::is_running() const noexcept { return impl_->is_running(); }
-std::string RealtimeSession::fault_message() const {
-    return faulted() ? "Selected WASAPI device stopped, rerouted or was interrupted; automatic fallback is disabled" : "";
-}
+std::string RealtimeSession::fault_message() const { return impl_->fault_message(); }
+std::string RealtimeSession::fault_code() const { return impl_->fault_code(); }
+std::string RealtimeSession::fault_node_id() const { return impl_->fault_node_id(); }
 
 } // namespace audioprocess

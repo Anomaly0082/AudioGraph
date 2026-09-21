@@ -4,7 +4,7 @@
 
 现在还支持 [同步离线分块 Graph](streaming-graph.md)。下文的 DataValue/execute 描述主要针对整段同步 DAG；分块采用 AudioStream 端口和独立流式接口。
 
-[实时设备桥接](realtime-audio.md) 是独立的固定会话原型，尚不接受 GraphDefinition，也未增加 Registry 节点。不能把离线流式节点直接放到设备回调里执行。
+[最小实时 Graph](realtime-audio.md) 复用 GraphDefinition，新增实时处理器工厂和端点绑定；使用独立的 RealtimeGraphExecutor。不能把离线流式节点直接放到设备回调里执行，AudioStream 端口相同不代表执行契约兼容。
 
 ## 配置和执行
 
@@ -33,7 +33,7 @@ OutputValues execute(const InputValues& inputs, ExecutionContext& context);
 
 容器映射端口 ID 到 DataValue：Audio/Number/Text/FilePath。Audio 对应 `shared_ptr<const AudioClip>`，包括 float32 交错样本、采样率和声道数。发布数据后生产者也不得通过自己保留的可写别名继续修改。音频/文本/数值可以使用相同函数签名，但每个端口仍按声明验证。
 
-节点内部实现不依赖相邻节点或具体 Executor。需要外部资源时由 Node 调用服务；当前九个内置节点不使用 GPU 或网络服务。
+节点内部实现不依赖相邻节点或具体 Executor。需要外部资源时由 Node 调用服务；当前内置处理节点不使用 GPU 或网络服务。实时设备资源由端点绑定交给 Session 管理，不由 DSP 节点创建 WASAPI。
 
 每次执行创建新实例，防止上次任务状态泄漏。输入默认只读；Gain 创建新音频，Peak 共享读取。Executor 检查输出必需性、类型、空音频指针、音频格式和 NaN/Inf；没有声称支持任意动态数据类型。新增 DataValue 类型目前需要修改类型定义并编译。
 

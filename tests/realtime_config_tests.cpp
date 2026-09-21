@@ -9,7 +9,7 @@ int main() {
     try {
         using namespace audioprocess;
         const auto config = parse_realtime_config(R"({"schema_version":1,"input_device":"capture-id","output_device":"render-id","gain_db":-6})");
-        if (config.input_device != "capture-id" || config.session.bridge.gain_db != -6 ||
+        if (config.input_device != "capture-id" || config.gain_db != -6 ||
             config.session.bridge.target_frames != 960 || !config.session.probe)
             throw std::runtime_error("Default configuration contract changed");
         const std::vector<std::string> invalid{

@@ -105,10 +105,28 @@ Json descriptor_json(const NodeDescriptor& node) {
     case StreamRole::Processor: role = "processor"; break;
     case StreamRole::Sink: role = "sink"; break;
     }
-    return {{"typeId", node.type_id}, {"displayName", node.display_name},
+    Json result{{"typeId", node.type_id}, {"displayName", node.display_name},
             {"description", node.description}, {"execution_domain", domain},
             {"stream_role", role},
             {"inputs", inputs}, {"outputs", outputs}, {"parameters", parameters}};
+    const char* realtime_role = "none";
+    switch (node.realtime_role) {
+    case RealtimeRole::None: break;
+    case RealtimeRole::Source: realtime_role = "source"; break;
+    case RealtimeRole::Processor: realtime_role = "processor"; break;
+    case RealtimeRole::Sink: realtime_role = "sink"; break;
+    }
+    result["realtime_role"] = realtime_role;
+    if (node.realtime_capabilities) {
+        const auto& capability = *node.realtime_capabilities;
+        result["realtime_capabilities"] = {
+            {"format", {{"sample_rate", capability.format.sample_rate}, {"channels", capability.format.channel_count},
+                        {"sample_type", "float32"}, {"layout", "interleaved"}}},
+            {"maximum_block_frames", capability.maximum_block_frames},
+            {"supports_variable_blocks", capability.supports_variable_blocks},
+            {"offline_drivable", capability.offline_drivable}};
+    }
+    return result;
 }
 
 Json value_json(const DataValue& value) {

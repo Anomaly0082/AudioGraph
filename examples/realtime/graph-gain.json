@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "input", "type": "realtime_input", "parameters": {"device_id": "REPLACE_WITH_CAPTURE_ID_FROM_LIST_DEVICES"}},
+    {"id": "gain", "type": "realtime_gain", "parameters": {"gain_db": -6}},
+    {"id": "output", "type": "realtime_output", "parameters": {"device_id": "REPLACE_WITH_PLAYBACK_ID_FROM_LIST_DEVICES"}}
+  ],
+  "connections": [
+    {"from": {"node": "input", "port": "audio"}, "to": {"node": "gain", "port": "audio"}},
+    {"from": {"node": "gain", "port": "audio"}, "to": {"node": "output", "port": "audio"}}
+  ]
+}

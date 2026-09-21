@@ -21,6 +21,8 @@ add_library(audio_core STATIC
     src/streaming_nodes.cpp
     src/wav_file.cpp
     src/realtime_bridge.cpp
+    src/realtime_graph_executor.cpp
+    src/realtime_nodes.cpp
 )
 
 target_include_directories(audio_core
@@ -119,7 +121,7 @@ if(BUILD_TESTING)
     add_test(NAME graph-tests COMMAND graph-tests)
 
     find_package(Threads REQUIRED)
-    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec stream-contract stream-nodes realtime-bridge realtime-config)
+    foreach(test_name IN ITEMS contracts execution-contract file-boundary codec stream-contract stream-nodes realtime-bridge realtime-config realtime-graph)
         string(REPLACE "-" "_" test_source "${test_name}")
         add_executable(${test_name}-tests tests/${test_source}_tests.cpp)
         target_link_libraries(${test_name}-tests PRIVATE audio_graph_io audio_realtime_config Threads::Threads)
@@ -150,6 +152,13 @@ if(BUILD_TESTING)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/stream_cli_tests.cmake)
     set_tests_properties(stream-cli-tests PROPERTIES TIMEOUT 60)
     if(WIN32)
+        add_executable(realtime-session-tests tests/realtime_session_tests.cpp)
+        target_link_libraries(realtime-session-tests PRIVATE audio_device_session)
+        if(MSVC)
+            target_compile_options(realtime-session-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+        endif()
+        add_test(NAME realtime-session-tests COMMAND realtime-session-tests)
+        set_tests_properties(realtime-session-tests PROPERTIES TIMEOUT 30)
         add_test(NAME realtime-cli-contract-tests COMMAND ${CMAKE_COMMAND}
             -DREALTIME_CLI=$<TARGET_FILE:realtime-cli>
             -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/realtime-cli-contract-tests

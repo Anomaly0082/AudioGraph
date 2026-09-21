@@ -1,6 +1,7 @@
 #include "audioprocess/node.h"
 #include "audioprocess/execution_error.h"
 #include "audioprocess/streaming_node.h"
+#include "audioprocess/realtime_node.h"
 
 #include <algorithm>
 #include <cmath>
@@ -63,6 +64,20 @@ void validate_descriptor(const NodeDescriptor& descriptor) {
     case ExecutionDomain::Asynchronous: case ExecutionDomain::Streaming: break;
     default: throw ExecutionError("invalid_descriptor", "Unknown execution domain");
     }
+    if (descriptor.execution_domain != ExecutionDomain::Realtime &&
+        (descriptor.realtime_role != RealtimeRole::None || descriptor.realtime_capabilities)) {
+        throw ExecutionError("invalid_descriptor", "Realtime metadata requires the Realtime execution domain");
+    }
+    if (descriptor.execution_domain == ExecutionDomain::Realtime) {
+        if (!descriptor.realtime_capabilities || !descriptor.realtime_capabilities->format.valid() ||
+            descriptor.realtime_capabilities->maximum_block_frames == 0 || descriptor.stream_role != StreamRole::None) {
+            throw ExecutionError("invalid_descriptor", "Realtime nodes require valid format/block capabilities and no streaming role");
+        }
+        switch (descriptor.realtime_role) {
+        case RealtimeRole::Source: case RealtimeRole::Processor: case RealtimeRole::Sink: break;
+        default: throw ExecutionError("invalid_descriptor", "Realtime nodes require an explicit role");
+        }
+    }
     validate_ports(descriptor.inputs);
     validate_ports(descriptor.outputs);
     std::unordered_set<std::string> ids;
@@ -108,7 +123,8 @@ bool matching_ports(const std::vector<PortDescriptor>& expected, const std::vect
 void validate_instance_descriptor(const NodeDescriptor& expected, const NodeDescriptor& actual) {
     if (actual.type_id != expected.type_id || actual.execution_domain != expected.execution_domain ||
         actual.stream_role != expected.stream_role || !matching_ports(expected.inputs, actual.inputs) ||
-        !matching_ports(expected.outputs, actual.outputs)) {
+        !matching_ports(expected.outputs, actual.outputs) || actual.realtime_role != expected.realtime_role ||
+        actual.realtime_capabilities != expected.realtime_capabilities) {
         throw ExecutionError("invalid_factory", "Node factory returned a different execution contract: " + expected.type_id);
     }
 }
@@ -126,12 +142,13 @@ void NodeRegistry::register_type(NodeDescriptor descriptor, Factory factory) {
         throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
     }
     const auto is_stream = [](const PortDescriptor& port) { return port.type == DataType::AudioStream; };
-    if (descriptor.execution_domain == ExecutionDomain::Streaming || descriptor.stream_role != StreamRole::None ||
+    if (descriptor.execution_domain == ExecutionDomain::Streaming || descriptor.execution_domain == ExecutionDomain::Realtime ||
+        descriptor.stream_role != StreamRole::None ||
         std::ranges::any_of(descriptor.inputs, is_stream) || std::ranges::any_of(descriptor.outputs, is_stream)) {
-        throw ExecutionError("invalid_descriptor", "Streaming nodes require register_stream_type");
+        throw ExecutionError("invalid_descriptor", "Streaming and realtime nodes require their dedicated registration methods");
     }
     const auto type_id = descriptor.type_id;
-    entries_.emplace(type_id, Entry{std::move(descriptor), std::move(factory), {}});
+    entries_.emplace(type_id, Entry{std::move(descriptor), std::move(factory), {}, {}});
 }
 
 void NodeRegistry::register_stream_type(NodeDescriptor descriptor, StreamFactory factory) {
@@ -157,7 +174,39 @@ void NodeRegistry::register_stream_type(NodeDescriptor descriptor, StreamFactory
     }
     if (!valid_role) throw ExecutionError("invalid_descriptor", "Stream role and ports do not match the linear stream contract");
     const auto type_id = descriptor.type_id;
-    entries_.emplace(type_id, Entry{std::move(descriptor), {}, std::move(factory)});
+    entries_.emplace(type_id, Entry{std::move(descriptor), {}, std::move(factory), {}});
+}
+
+void NodeRegistry::register_realtime_endpoint(NodeDescriptor descriptor) {
+    validate_descriptor(descriptor);
+    if (entries_.contains(descriptor.type_id)) {
+        throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
+    }
+    const bool source = descriptor.realtime_role == RealtimeRole::Source &&
+        descriptor.inputs.empty() && only_stream_port(descriptor.outputs);
+    const bool sink = descriptor.realtime_role == RealtimeRole::Sink &&
+        only_stream_port(descriptor.inputs) && descriptor.outputs.empty();
+    const auto device = std::ranges::find(descriptor.parameters, std::string("device_id"), &ParameterDescriptor::id);
+    if (descriptor.execution_domain != ExecutionDomain::Realtime || (!source && !sink) ||
+        device == descriptor.parameters.end() || device->type != ParameterType::Text || !device->required) {
+        throw ExecutionError("invalid_descriptor", "Realtime endpoints require source/sink ports and required Text device_id");
+    }
+    const auto type_id = descriptor.type_id;
+    entries_.emplace(type_id, Entry{std::move(descriptor), {}, {}, {}});
+}
+
+void NodeRegistry::register_realtime_type(NodeDescriptor descriptor, RealtimeFactory factory) {
+    validate_descriptor(descriptor);
+    if (entries_.contains(descriptor.type_id)) {
+        throw ExecutionError("duplicate_node_type", "Duplicate node type id: " + descriptor.type_id);
+    }
+    if (!factory || descriptor.execution_domain != ExecutionDomain::Realtime ||
+        descriptor.realtime_role != RealtimeRole::Processor || !only_stream_port(descriptor.inputs) ||
+        !only_stream_port(descriptor.outputs)) {
+        throw ExecutionError("invalid_descriptor", "Realtime processors require one audio stream input/output and a factory");
+    }
+    const auto type_id = descriptor.type_id;
+    entries_.emplace(type_id, Entry{std::move(descriptor), {}, {}, std::move(factory)});
 }
 
 const NodeDescriptor& NodeRegistry::descriptor(const std::string& type_id) const {
@@ -218,6 +267,19 @@ std::unique_ptr<IStreamNode> NodeRegistry::create_stream(const std::string& type
     case StreamRole::None: break;
     }
     if (!role_matches) throw ExecutionError("invalid_factory", "Stream factory did not implement the declared role: " + type_id);
+    return instance;
+}
+
+std::unique_ptr<IRealtimeProcessor> NodeRegistry::create_realtime(const std::string& type_id, const ParameterMap& parameters) const {
+    auto normalized = normalize_parameters(type_id, parameters);
+    const auto& entry = entries_.at(type_id);
+    if (!entry.realtime_factory || entry.descriptor.execution_domain != ExecutionDomain::Realtime ||
+        entry.descriptor.realtime_role != RealtimeRole::Processor) {
+        throw ExecutionError("unsupported_execution_domain", "Node does not support realtime processor creation: " + type_id);
+    }
+    auto instance = entry.realtime_factory(normalized);
+    if (!instance) throw ExecutionError("invalid_factory", "Realtime factory returned null: " + type_id);
+    validate_instance_descriptor(entry.descriptor, instance->descriptor());
     return instance;
 }
 

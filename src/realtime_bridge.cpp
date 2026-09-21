@@ -15,46 +15,22 @@ void add_owned(std::atomic<std::uint64_t>& counter, std::uint64_t amount) noexce
 
 } // namespace
 
-void RealtimeBridge::RealtimeGainProcessor::reset(float gain) noexcept {
-    current_ = target_ = gain;
-    step_ = 0.0F;
-    remaining_ = 0;
-}
-
-void RealtimeBridge::RealtimeGainProcessor::set_target(float gain, std::uint32_t ramp_frames) noexcept {
-    if (gain == target_) return;
-    target_ = gain;
-    remaining_ = ramp_frames;
-    step_ = (target_ - current_) / static_cast<float>(ramp_frames);
-}
-
-float RealtimeBridge::RealtimeGainProcessor::process(float sample) noexcept {
-    if (remaining_ != 0) {
-        current_ += step_;
-        if (--remaining_ == 0) current_ = target_;
-    }
-    return sample * current_;
-}
-
-RealtimeBridge::RealtimeBridge(RealtimeBridgeConfig config) : config_(config) {
+RealtimeBridge::RealtimeBridge(RealtimeBridgeConfig config, RealtimeGraphExecutor* plan)
+    : config_(config), plan_(plan) {
     const auto capacity = config.capacity_frames;
     if (config.sample_rate != 48000 || capacity < 4 || capacity > (1U << 20U) ||
-        (capacity & (capacity - 1U)) != 0 || config.target_frames < 2 || config.target_frames > capacity - 2 ||
-        !std::isfinite(config.gain_db) || config.gain_db < -24.0F || config.gain_db > 12.0F) {
-        throw std::invalid_argument("Realtime bridge requires 48kHz, power-of-two capacity 4..1048576, target 2..capacity-2, and gain -24..12 dB");
+        (capacity & (capacity - 1U)) != 0 || config.target_frames < 2 || config.target_frames > capacity - 2) {
+        throw std::invalid_argument("Realtime bridge requires 48kHz, power-of-two capacity 4..1048576 and target 2..capacity-2");
     }
-    ring_.resize(capacity); // 唯一音频缓存分配发生在设备启动前。
+    processing_frames_ = plan_ ? plan_->max_block_frames() : 256;
+    if (processing_frames_ == 0 || processing_frames_ > 65536) {
+        throw std::invalid_argument("Realtime bridge requires a prepared plan with maximum block size 1..65536");
+    }
+    ring_.resize(capacity); // 所有音频缓存分配发生在设备启动前。
+    processing_buffer_.resize(processing_frames_);
     mask_ = static_cast<std::uint64_t>(capacity - 1U);
-    target_gain_.store(std::pow(10.0F, config.gain_db / 20.0F), std::memory_order_relaxed);
     muted_.store(config.muted, std::memory_order_relaxed);
     reset();
-}
-
-bool RealtimeBridge::set_gain_db(float gain_db) noexcept {
-    if (!std::isfinite(gain_db) || gain_db < -24.0F || gain_db > 12.0F) return false;
-    // 对数转换在控制线程完成；音频回调只读线性增益并做加法坡度。
-    target_gain_.store(std::pow(10.0F, gain_db / 20.0F), std::memory_order_relaxed);
-    return true;
 }
 
 void RealtimeBridge::set_muted(bool muted) noexcept {
@@ -91,10 +67,14 @@ void RealtimeBridge::render(float* output, std::uint32_t frames, std::uint32_t c
         return;
     }
     add_owned(render_frames_, frames);
+    if (faulted()) {
+        std::fill_n(output, static_cast<std::size_t>(frames) * channels, 0.0F);
+        output_peak_.store(0.0F, std::memory_order_relaxed);
+        return;
+    }
     auto read = read_position_.load(std::memory_order_relaxed);
     const auto write = write_position_.load(std::memory_order_acquire);
     const auto available = write - read;
-    gain_.set_target(target_gain_.load(std::memory_order_relaxed), config_.sample_rate / 100U);
     const bool muted = muted_.load(std::memory_order_relaxed);
 
     if (buffering_) {
@@ -118,40 +98,75 @@ void RealtimeBridge::render(float* output, std::uint32_t frames, std::uint32_t c
     std::uint64_t sanitized = 0;
     std::uint64_t clipped = 0;
     float peak = 0.0F;
-    for (std::uint32_t index = 0; index < frames; ++index) {
-        if (write - read < 2) {
-            // 至多留一帧作为重缓冲后的插值左端；不跳过生产者尚未发布的数据。
-            std::fill_n(output + static_cast<std::size_t>(index) * channels,
-                        static_cast<std::size_t>(frames - index) * channels, 0.0F);
-            add_owned(underflow_frames_, frames - index);
-            buffering_ = true;
-            phase_ = 0.0;
+    std::uint32_t output_frame{};
+    while (output_frame < frames) {
+        const auto requested = std::min(processing_frames_, frames - output_frame);
+        std::uint32_t produced{};
+        for (; produced < requested; ++produced) {
+            if (write - read < 2) {
+                // 缺音不假造输入推进有状态节点：只处理有效前缀，其余设备输出补零。
+                buffering_ = true;
+                phase_ = 0.0;
+                break;
+            }
+            const float left = ring_[static_cast<std::size_t>(read & mask_)];
+            const float right = ring_[static_cast<std::size_t>((read + 1U) & mask_)];
+            // double 中间值避免相反的大幅有限采样相减溢出。
+            float sample = static_cast<float>(static_cast<double>(left) +
+                (static_cast<double>(right) - left) * phase_);
+            if (!std::isfinite(sample)) { sample = 0.0F; ++sanitized; }
+            processing_buffer_[produced] = sample;
+            phase_ += ratio_;
+            const auto consumed = static_cast<std::uint32_t>(phase_);
+            phase_ -= consumed;
+            read += consumed;
+        }
+
+        if (produced != 0 && plan_) {
+            const auto result = plan_->process(std::span<float>{processing_buffer_.data(), produced});
+            if (result.status != RealtimeProcessStatus::Ok) {
+                // 单一 render 写者：先发布索引，再以 release 发布锁存状态。回调不构造文本。
+                failed_node_.store(result.node_index, std::memory_order_relaxed);
+                process_status_.store(result.status, std::memory_order_release);
+                std::fill_n(output, static_cast<std::size_t>(frames) * channels, 0.0F);
+                peak = 0.0F;
+                break;
+            }
+        }
+
+        for (std::uint32_t index = 0; index < produced; ++index) {
+            float sample = processing_buffer_[index];
+            if (!std::isfinite(sample)) { sample = 0.0F; ++sanitized; }
+            if (sample < -1.0F || sample > 1.0F) { ++clipped; sample = std::clamp(sample, -1.0F, 1.0F); }
+            if (muted) sample = 0.0F; // Probe 仍消费并执行 Graph，只有最终设备输出静音。
+            peak = std::max(peak, std::abs(sample));
+            const auto output_index = static_cast<std::size_t>(output_frame + index) * channels;
+            output[output_index] = sample;
+            if (channels == 2) output[output_index + 1] = sample;
+        }
+        output_frame += produced;
+        if (produced < requested) {
+            std::fill_n(output + static_cast<std::size_t>(output_frame) * channels,
+                        static_cast<std::size_t>(frames - output_frame) * channels, 0.0F);
+            add_owned(underflow_frames_, frames - output_frame);
             break;
         }
-        const float left = ring_[static_cast<std::size_t>(read & mask_)];
-        const float right = ring_[static_cast<std::size_t>((read + 1U) & mask_)];
-        // double 中间值避免极大但有限的相反采样相减时 float 溢出。
-        float sample = static_cast<float>(static_cast<double>(left) +
-            (static_cast<double>(right) - left) * phase_);
-        sample = gain_.process(sample);
-        if (!std::isfinite(sample)) { sample = 0.0F; ++sanitized; }
-        if (sample < -1.0F || sample > 1.0F) { ++clipped; sample = std::clamp(sample, -1.0F, 1.0F); }
-        if (muted) sample = 0.0F; // 探测静音仍持续消费，取消静音时不会播放积压旧录音。
-        peak = std::max(peak, std::abs(sample));
-        const auto output_index = static_cast<std::size_t>(index) * channels;
-        output[output_index] = sample;
-        if (channels == 2) output[output_index + 1] = sample;
-
-        phase_ += ratio_;
-        const auto consumed = static_cast<std::uint32_t>(phase_); // ratio <= 1.005，最多前进2帧。
-        phase_ -= consumed;
-        read += consumed;
     }
     // 回调读完后才发布可重用区间，capture 不会覆盖本回调仍在使用的样本。
     read_position_.store(read, std::memory_order_release);
     add_owned(render_sanitized_, sanitized);
     add_owned(clipped_samples_, clipped);
     output_peak_.store(peak, std::memory_order_relaxed);
+}
+
+bool RealtimeBridge::faulted() const noexcept {
+    return process_status_.load(std::memory_order_acquire) != RealtimeProcessStatus::Ok;
+}
+
+RealtimeProcessResult RealtimeBridge::process_fault() const noexcept {
+    const auto status = process_status_.load(std::memory_order_acquire);
+    if (status == RealtimeProcessStatus::Ok) { return {}; }
+    return {status, failed_node_.load(std::memory_order_relaxed)};
 }
 
 RealtimeBridgeStats RealtimeBridge::stats() const noexcept {
@@ -175,13 +190,14 @@ RealtimeBridgeStats RealtimeBridge::stats() const noexcept {
 }
 
 void RealtimeBridge::reset() noexcept {
-    // 前置条件：capture/render 均已停止。保留当前控制参数，只清会话历史和统计。
+    // 前置条件：capture/render 均已停止。仅清传输历史；节点状态由调用方重新 prepare。
     write_position_.store(0, std::memory_order_relaxed);
     read_position_.store(0, std::memory_order_relaxed);
     phase_ = 0.0;
     ratio_ = 1.0F;
     buffering_ = true;
-    gain_.reset(target_gain_.load(std::memory_order_relaxed));
+    failed_node_.store(UINT32_MAX, std::memory_order_relaxed);
+    process_status_.store(RealtimeProcessStatus::Ok, std::memory_order_relaxed);
     capture_frames_.store(0, std::memory_order_relaxed);
     dropped_frames_.store(0, std::memory_order_relaxed);
     capture_sanitized_.store(0, std::memory_order_relaxed);

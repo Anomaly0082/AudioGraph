@@ -2,6 +2,7 @@
 #include "audioprocess/execution_error.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <vector>
@@ -33,6 +34,8 @@ void validate_realtime_config(const RealtimeRouteConfig& config) {
         if (id->empty() || id->find('\0') != std::string::npos) invalid("Explicit input and output device IDs are required");
     if (config.session.device_period_frames < 32 || config.session.device_period_frames > 2048)
         invalid("Device period must be between 32 and 2048 frames", "/period_frames");
+    if (!std::isfinite(config.gain_db) || config.gain_db < -24 || config.gain_db > 12)
+        invalid("Gain must be finite and between -24 and 12 dB", "/gain_db");
     try { const RealtimeBridge validation(config.session.bridge); }
     catch (const std::exception& error) { invalid(error.what()); }
 }
@@ -65,7 +68,7 @@ RealtimeRouteConfig parse_realtime_config(std::string_view text) {
     config.output_device = device(root, "output_device");
     if (root.contains("gain_db")) {
         if (!root.at("gain_db").is_number()) invalid("Expected numeric gain_db", "/gain_db");
-        config.session.bridge.gain_db = root.at("gain_db").get<float>();
+        config.gain_db = root.at("gain_db").get<float>();
     }
     config.session.bridge.capacity_frames = integer(root, "capacity_frames", config.session.bridge.capacity_frames);
     config.session.bridge.target_frames = integer(root, "target_frames", config.session.bridge.target_frames);

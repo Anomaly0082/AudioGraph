@@ -7,10 +7,11 @@
 
 namespace audioprocess {
 
-// P3 专用实时会话配置，不是 GraphDefinition；设备回调不执行离线文件图。
+// P3 配置的兼容读取。CLI 将它转换为 GraphDefinition，不再有第二条固定 Gain 执行路径。
 struct RealtimeRouteConfig {
     std::string input_device;
     std::string output_device;
+    float gain_db{0.0F};
     RealtimeSessionConfig session;
 };
 
