@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "../../build/desktop-model-tests"
+  },
+  "include": ["src/model.ts"],
+  "references": []
+}

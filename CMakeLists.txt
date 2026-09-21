@@ -119,6 +119,12 @@ add_custom_command(TARGET graph-demo POST_BUILD
         "${TAURI_SIDECAR_DIR}/graph-demo-x86_64-pc-windows-msvc.exe"
     COMMENT "Copying graph-demo into the Tauri sidecar directory"
 )
+add_custom_command(TARGET control-cli POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:control-cli>
+        "${TAURI_SIDECAR_DIR}/control-cli-x86_64-pc-windows-msvc.exe"
+    COMMENT "Copying control-cli into the Tauri sidecar directory"
+)
 endif()
 
 include(CTest)

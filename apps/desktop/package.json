@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "tsc -p tsconfig.test.json && node --test tests/model.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,4 +24,3 @@
     "vite": "^7"
   }
 }
-

@@ -14,7 +14,8 @@
 - 分块 Executor：逐级格式准备、连续帧校验、零到多块输出、按上游到下游排尾和协作取消。正式支持离线分块，尚未接麦克风。
 - 实验契约：旧流式 vector 输出和异步 future 方案仍保留为实验，不等同于正式分块或实时能力。
 - 实时 Graph：realtime_input、realtime_gain、realtime_output 注册到同一 Registry；控制线程准备线性计划，设备回调执行预分配处理器。有缓冲、时钟漂移补偿、静音探测和统计，不录音。
-- 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制，尚未接入 AI/MCP/Tauri。
+- 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制，尚未接入 AI/MCP。
+- 桌面控制台：Tauri/React 通过 Rust 常驻连接 control-cli，提供 Graph JSON 编辑、模板、校验、任务操作、结果和节点能力查看；不是拖拽节点编辑器。
 
 ## 构建与测试
 
@@ -73,7 +74,7 @@ Release 对应 `cmake --build --preset release --parallel`、`ctest --preset rel
 .\build\Debug\control-cli.exe --workspace C:\AAAProject\AudioProcess
 ```
 
-保持进程连接，逐行发送结构化 JSON 请求，例如 `{"schema_version":1,"id":"q1","op":"capabilities"}`。整段、离线分块和实时图复用同一任务生命周期；宿主默认不允许设备访问。协议、状态与安全边界见 [受控任务接口](docs/control-api.md)。界面与 AI 连接器尚未接入。
+保持进程连接，逐行发送结构化 JSON 请求，例如 `{"schema_version":1,"id":"q1","op":"capabilities"}`。整段、离线分块和实时图复用同一任务生命周期；宿主默认不允许设备访问。协议、状态与安全边界见 [受控任务接口](docs/control-api.md)。桌面复用此接口；AI/MCP 连接器尚未接入。
 
 ## 目录与阅读顺序
 
@@ -84,7 +85,7 @@ apps/graph_demo/       JSON/命令行协议入口
 apps/audio_cli/        保留 M0 AudioBlock 旁路实验
 apps/realtime_cli/     Windows 实时设备会话入口
 apps/control_cli/      常驻 JSON Lines 任务控制入口
-apps/desktop/          现有 React + Rust/Tauri 演示
+apps/desktop/          React + Rust/Tauri 最小控制台
 tests/                 核心、文件、配置、CLI 和契约实验测试
 examples/graphs/       可编辑 Graph 配置
 examples/realtime/     实时 Graph 与旧会话配置示例
@@ -96,25 +97,26 @@ third_party/           固定版本 nlohmann/json、miniaudio 和许可证
 
 实时路径：`realtime_node.h → realtime_graph_executor.cpp → realtime_nodes.cpp → realtime_bridge.cpp → realtime_session.cpp`。DSP、调度、设备分别阅读，不需要先研究 miniaudio 的实现。
 
-## 桌面兼容
+## 桌面控制台
 
-本阶段保留原 Tauri 固定图演示，不增加完整 JSON 编辑 UI。`graph-demo --input ... --output ... --gain-db ...` 保持原成功返回字段；错误同时输出机器 JSON 和 stderr 文本，兼容现有 Rust 解析。
+桌面已从旧固定 Gain 演示切换到 control-cli 任务接口。先选择工作目录并连接，再编辑/载入 Graph JSON、校验和执行；默认文本模板不访问文件或设备。节点能力、参数、任务状态、取消和结构化结果在界面查看。实时设备需明确授权，默认静音。使用流程及限制见 [桌面说明](docs/desktop.md)。
 
 ```powershell
-cmake --build --preset debug --target graph-demo
+cmake --build --preset debug --target control-cli
 Set-Location .\apps\desktop
 npm ci
+npm test
 npm run tauri -- dev
 ```
 
-Windows x64 CMake 构建会复制 Sidecar 到 `src-tauri/binaries`；重新运行 Tauri 开发/构建流程才会把新 Sidecar 放到桌面程序旁。仅复制 C++ 源目录的产物不会自动更新已经构建的桌面 EXE。
+Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`；重新运行 Tauri 开发/构建流程才会把新 Sidecar 放到桌面程序旁。仅复制 C++ 产物不会自动更新已运行的桌面后台进程。旧 graph-demo 命令仍保留，但桌面不再调用它。
 
 ## 当前边界
 
 - SyncGraphExecutor 的 Audio 是完整 AudioClip；长录音可能占用较多内存。StreamingGraphExecutor 的 AudioStream 使用借用块，不缓存完整录音；格式转换接口已预留，但没有重采样算法。
 - 文件编解码仅 PCM16 WAV；离线 Graph 未实现采样率转换。实时会话由 miniaudio 适配设备格式，但不等于 Graph 已有转换节点。未实现 MP3/FLAC、ASR、TTS、GPU 或云端服务。
-- 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图、运行中调参或桌面控制；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
+- 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图或运行中调参；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
 - 正式分块执行仍是同步离线，不支持流式分支、混合整段/流式图或异步任务。M0 旁路工具保留，正式流式 Graph 不通过它调度。
-- 已有受控任务协议，实际 AI/MCP/Tauri 接入、上层 Workflow 和参数搜索尚未实现。AI 编排不以执行任意 Python 为前提。
+- 已有受控任务协议及最小 Tauri 控制台，实际 AI/MCP 接入、上层 Workflow 和参数搜索尚未实现。AI 编排不以执行任意 Python 为前提。
 - 取消是协作请求，失败可能留下部分新文件，图不提供文件事务回滚。
 - 需求与设计目录为本地讨论材料，按用户要求不提交 Git。

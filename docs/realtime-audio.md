@@ -57,7 +57,7 @@ Graph 使用现有 v1 的 nodes/connections/exports 结构；节点数组顺序�
 - `realtime_graph_executor.*`：纯校验和编译、控制线程 prepare、音频线程逐节点 process。prepare 创建新实例，重复准备等价于重新开始处理任务，不继承历史。
 - `realtime_session.*`：控制线程枚举、初始化、启动和停止 WASAPI 设备；miniaudio 隐藏在 PImpl 后面。
 - `realtime_bridge.*`：设备无关的桥接核心；采集线程写入，播放线程读取、漂移补偿后分片调用已准备的计划。环形队列/工作块在启动前分配，回调不访问注册表、文件、日志或等待下游。
-- `apps/realtime_cli/main.cpp`：参数、安全模式、停止轮询和机器可读结果。不属于 Tauri 前端；本阶段桌面仍使用原离线 sidecar。
+- `apps/realtime_cli/main.cpp`：参数、安全模式、停止轮询和机器可读结果，不属于 Tauri 前端。P6 桌面经 control-cli 任务接口运行实时会话，不直接调用这个开发 CLI。
 
 Bridge 是单生产者/单消费者（SPSC），capture/render 各仅允许一个调用线程。Session 持有执行计划，Bridge 借用；必须在设备回调全部停止后才能销毁。Session 公共方法由同一控制线程串行调用。参数在 prepare 前确定，本阶段不提供运行中参数更新；P3 的 Bridge 私有 gain/setter 已移除，避免两套 Gain 调度。
 
@@ -91,4 +91,4 @@ stdout 输出一个最终 JSON，stderr 每秒输出 metrics JSON；启动失败
 
 本轮通过 --graph 实机静音探测：CABLE Output → Realtek，旁路图 3 秒（采集 144480、输出 147360 帧），Gain 图 5 秒（采集 241440、输出 243360 帧），两次丢帧/欠载均 0、定时正常停止。输入峰值均 0；只有设备回调和新 Graph 路径得到验证，有声效果与上面的未覆盖项目仍不标记完成。
 
-未实现：实时分支/混音、异步和变长输出、ASR/GPU/云端节点、实时录音、Tauri 实时控制、热改图、Workflow/AI 工具接入。后续优先补 F02 受控任务接口，同时补人工设备验收；不为增加音效不断扩大硬件实现范围。
+未实现：实时分支/混音、异步和变长输出、ASR/GPU/云端节点、实时录音、热改图、Workflow/AI 工具接入。P5 已提供统一任务接口，P6 提供最小桌面控制；仍需补人工设备验收，不为增加音效不断扩大硬件实现范围。

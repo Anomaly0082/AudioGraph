@@ -1,95 +1,47 @@
-use serde::{Deserialize, Serialize};
-use tauri_plugin_shell::ShellExt;
+use crate::backend::{BackendManager, ConnectionInfo, DisconnectReport};
+use crate::graph_files::{GraphDocument, SavedGraph};
+use serde_json::Value;
+use std::sync::Arc;
+use tauri::Emitter;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunResult {
-    pub success: bool,
-    pub peak: f64,
-    pub gain_db: f64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PortDescriptor {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub data_type: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NodeDescriptor {
-    pub type_id: String,
-    pub display_name: String,
-    pub inputs: Vec<PortDescriptor>,
-    pub outputs: Vec<PortDescriptor>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NodeList {
-    pub nodes: Vec<NodeDescriptor>,
-}
-
-async fn run_sidecar(
-    app: &tauri::AppHandle,
-    args: Vec<String>,
-) -> Result<String, String> {
-    let command = app
-        .shell()
-        .sidecar("graph-demo")
-        .map_err(|error| format!("无法定位 C++ graph-demo：{error}"))?
-        .args(args);
-
-    let output = command
-        .output()
-        .await
-        .map_err(|error| format!("无法启动 C++ graph-demo：{error}"))?;
-
-    if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if message.is_empty() {
-            "C++ graph-demo 执行失败".to_string()
-        } else {
-            message
-        });
-    }
-
-    String::from_utf8(output.stdout)
-        .map(|value| value.trim().to_string())
-        .map_err(|error| format!("C++ graph-demo 返回了无效 UTF-8：{error}"))
+#[tauri::command]
+pub async fn connect(app: tauri::AppHandle, state: tauri::State<'_, Arc<BackendManager>>,
+                     workspace: String, allow_devices: Option<bool>, allow_monitor: Option<bool>) -> Result<ConnectionInfo, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.connect(workspace,
+        allow_devices.unwrap_or(false), allow_monitor.unwrap_or(false), Arc::new(move |event| {
+            let _ = app.emit("backend-disconnected", event);
+        }))).await.map_err(|e| format!("连接任务失败：{e}"))?
 }
 
 #[tauri::command]
-pub async fn list_nodes(app: tauri::AppHandle) -> Result<NodeList, String> {
-    let output = run_sidecar(&app, vec!["--list-nodes".to_string()]).await?;
-    serde_json::from_str(&output).map_err(|error| format!("无法解析节点描述：{error}"))
+pub async fn disconnect(state: tauri::State<'_, Arc<BackendManager>>, session_id: String) -> Result<DisconnectReport, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.disconnect(&session_id))
+        .await.map_err(|e| format!("断开任务失败：{e}"))?
 }
 
 #[tauri::command]
-pub async fn run_demo_graph(
-    app: tauri::AppHandle,
-    input_path: String,
-    output_path: String,
-    gain_db: f64,
-) -> Result<RunResult, String> {
-    if input_path.trim().is_empty() || output_path.trim().is_empty() {
-        return Err("输入和输出路径不能为空".to_string());
-    }
-
-    let output = run_sidecar(
-        &app,
-        vec![
-            "--input".to_string(),
-            input_path,
-            "--output".to_string(),
-            output_path,
-            "--gain-db".to_string(),
-            gain_db.to_string(),
-        ],
-    )
-    .await?;
-
-    serde_json::from_str(&output).map_err(|error| format!("无法解析执行结果：{error}"))
+pub async fn control_request(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, request: Value) -> Result<Value, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || manager.request(&session_id, request))
+        .await.map_err(|e| format!("控制请求失败：{e}"))?
 }
 
+#[tauri::command]
+pub async fn load_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, path: String) -> Result<GraphDocument, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = manager.workspace(&session_id)?;
+        crate::graph_files::load_graph_file(&workspace, &path)
+    }).await.map_err(|e| format!("载入Graph失败：{e}"))?
+}
+
+#[tauri::command]
+pub async fn save_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, path: String, graph: Value) -> Result<SavedGraph, String> {
+    let manager = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let workspace = manager.workspace(&session_id)?;
+        crate::graph_files::save_graph_file(&workspace, &path, &graph)
+    }).await.map_err(|e| format!("保存Graph失败：{e}"))?
+}

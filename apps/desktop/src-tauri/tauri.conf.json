@@ -20,14 +20,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; img-src 'self' asset: data: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-src 'none'"
     }
   },
   "bundle": {
     "active": false,
     "externalBin": [
-      "binaries/graph-demo"
+      "binaries/control-cli"
     ]
   }
 }
-
