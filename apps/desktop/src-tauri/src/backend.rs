@@ -298,6 +298,13 @@ impl Default for BackendManager {
 }
 
 impl BackendManager {
+    #[cfg(test)]
+    pub(crate) fn with_test_connection(connection: Arc<Connection>) -> Self {
+        let manager = Self::default();
+        *manager.connection.lock().unwrap() = Some(connection);
+        manager
+    }
+
     pub fn connect(&self, workspace: String, allow_devices: bool, allow_monitor: bool,
                    callback: DisconnectCallback) -> Result<ConnectionInfo, String> {
         let _operation = self.lifecycle.lock().unwrap();

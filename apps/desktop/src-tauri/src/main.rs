@@ -3,6 +3,8 @@
 mod commands;
 mod backend;
 mod graph_files;
+mod ai;
+mod ai_commands;
 
 use std::sync::{Arc, atomic::Ordering};
 use tauri::Manager;
@@ -10,6 +12,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManager>) {
     if manager.closing.swap(true, Ordering::AcqRel) { return; }
+    let ai = app.state::<Arc<ai::AiManager>>().inner().clone();
+    ai.shutdown();
     tauri::async_runtime::spawn_blocking(move || {
         match manager.shutdown() {
             Ok(report) => {
@@ -21,6 +25,7 @@ fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManage
             }
             Err(error) => {
                 manager.closing.store(false, Ordering::Release);
+                ai.reopen();
                 app.dialog().message(error).title("后台尚未确认退出，请稍后重试关闭")
                     .kind(MessageDialogKind::Error).blocking_show();
             }
@@ -32,12 +37,16 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(backend::BackendManager::default()))
+        .manage(Arc::new(ai::AiManager::default()))
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::disconnect,
             commands::control_request,
             commands::load_graph,
-            commands::save_graph
+            commands::save_graph,
+            ai_commands::ai_generate,
+            ai_commands::ai_summarize,
+            ai_commands::ai_cancel_request
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

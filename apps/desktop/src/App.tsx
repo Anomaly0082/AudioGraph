@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
+import AiPanel from "./AiPanel";
+import type { AiProposal } from "./ai-model";
 import { bindRealtimeDevices, buildTaskOptions, canAdvanceTaskState, canCancel, createTemplate, formatError,
   isCurrentTaskResponse, isTerminal, parseGraph, type Mode, type TaskState, type TemplateKind } from "./model";
 
@@ -47,6 +49,7 @@ export default function App() {
   const deadSessions = useRef(new Map<string, boolean>());
   const ownedSessions = useRef(new Set<string>());
   const [busy, setBusy] = useState<string | null>(null);
+  const [aiBusy, setAiBusy] = useState(false);
   const busyRef = useRef<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -67,7 +70,7 @@ export default function App() {
   const [inputDevice, setInputDevice] = useState("");
   const [outputDevice, setOutputDevice] = useState("");
   const taskActive = task !== null && !isTerminal(task.state) && task.state !== "unknown";
-  const locked = taskActive || busy !== null;
+  const locked = taskActive || busy !== null || aiBusy;
   const currentKey = JSON.stringify([connection?.sessionId, mode, graphText, blockFrames, duration, probe]);
   const validationCurrent = validatedKey === currentKey;
   const nodes = connection?.capabilities.nodes ?? [];
@@ -294,12 +297,48 @@ export default function App() {
     } catch (reason) { setError(formatError(reason)); }
   }
 
+  function applyAiProposal(proposal: AiProposal) {
+    editGraph(JSON.stringify(proposal.graph, null, 2));
+    setMode(proposal.mode); setProbe(true); setFileLabel("AI 提案（未保存）");
+    if (proposal.mode === "streaming" && typeof proposal.options.block_frames === "number") {
+      setBlockFrames(String(proposal.options.block_frames));
+    }
+    setNotice("AI 提案已应用到原 Graph 编辑器；正在提交真实任务。");
+  }
+
+  async function startAiProposal(proposal: AiProposal): Promise<string> {
+    const target = connectionRef.current;
+    if (!target || taskRef.current) throw new Error("请先连接后端并释放已有任务记录。");
+    const epoch = epochRef.current;
+    const data = requireSuccess(await rpc({
+      op: "tasks.start", mode: proposal.mode, graph: proposal.graph, options: proposal.options,
+    }, target));
+    if (epoch !== epochRef.current || target.sessionId !== connectionRef.current?.sessionId) {
+      throw new Error("连接已变化，迟到的任务响应已忽略。请检查任务与输出状态。");
+    }
+    setTask({ id: data.task_id, sessionId: target.sessionId, state: data.state, errors: data.errors });
+    if (isTerminal(data.state)) await fetchTaskResult(data.task_id, target, epoch);
+    return data.task_id;
+  }
+
+  async function cancelAiTask(expectedTaskId: string): Promise<void> {
+    const current = taskRef.current, target = connectionRef.current;
+    if (!current || !target || current.id !== expectedTaskId || current.sessionId !== target.sessionId) {
+      throw new Error("AI 任务已变化，未向其他任务发送取消请求。");
+    }
+    const epoch = epochRef.current;
+    const data = requireSuccess(await rpc({ op: "tasks.cancel", task_id: current.id }, target));
+    if (!isCurrentTaskResponse(epoch, epochRef.current, current.id, taskRef.current?.id ?? null)) return;
+    if (isTerminal(data.state)) await fetchTaskResult(current.id, target, epoch);
+    else setTask({ ...current, state: data.state, errors: data.errors });
+  }
+
   return <main className="workspace-shell">
     <header className="app-header"><div><p className="eyebrow">AUDIOPROCESS / CONTROL DESK</p><h1>音频 Graph 工作台</h1><p className="subtitle">编辑配置 · 校验能力 · 执行真实任务</p></div><div className={`connection-pill ${connection ? "connected" : ""}`}><span />{connection ? "后端已连接" : "后端未连接"}</div></header>
     {!desktop && <div className="banner preview" role="status">浏览器预览模式：可以编辑与查看模板。后端、文件和设备操作需要 Tauri 桌面应用。</div>}
     <section className="panel connection-panel" aria-labelledby="connection-title">
       <div className="section-heading"><div><span className="step">01</span><h2 id="connection-title">连接与权限</h2></div><small>连接不会自动打开音频设备</small></div>
-      <label htmlFor="workspace-path">工作目录</label><div className="input-row"><input id="workspace-path" value={workspace} disabled={!!connection || locked} onChange={(event) => setWorkspace(event.target.value)} placeholder="选择或输入现有项目目录" /><button disabled={!desktop || !!connection || locked} onClick={() => perform("选择目录", chooseWorkspace)}>选择目录</button><button className="primary" disabled={!desktop || !!connection || locked || !workspace.trim()} onClick={connectBackend}>连接后端</button><button disabled={!connection || !!busy} onClick={disconnectBackend}>断开</button></div>
+      <label htmlFor="workspace-path">工作目录</label><div className="input-row"><input id="workspace-path" value={workspace} disabled={!!connection || locked} onChange={(event) => setWorkspace(event.target.value)} placeholder="选择或输入现有项目目录" /><button disabled={!desktop || !!connection || locked} onClick={() => perform("选择目录", chooseWorkspace)}>选择目录</button><button className="primary" disabled={!desktop || !!connection || locked || !workspace.trim()} onClick={connectBackend}>连接后端</button><button disabled={!connection || !!busy || aiBusy} onClick={disconnectBackend}>断开</button></div>
       <div className="permission-row"><label className="checkbox-label"><input type="checkbox" checked={allowDevices} disabled={!!connection || locked} onChange={(event) => { setAllowDevices(event.target.checked); if (!event.target.checked) setAllowMonitor(false); }} />允许音频设备访问</label><label className="checkbox-label"><input type="checkbox" checked={allowMonitor} disabled={!allowDevices || !!connection || locked} onChange={(event) => setAllowMonitor(event.target.checked)} />允许有声输出</label><span className="muted">权限在连接时固定；修改需先断开。</span></div>
     </section>
     {error && <div className="banner error" role="alert"><strong>操作未完成</strong><pre>{error}</pre><button onClick={() => setError("")} aria-label="关闭错误提示">关闭</button></div>}
@@ -324,8 +363,11 @@ export default function App() {
         {mode === "realtime" && <section className="panel devices-panel"><div className="section-heading"><h2>设备绑定</h2><button disabled={!connection?.allowDevices || locked} onClick={listDevices}>枚举设备</button></div><p className="hint">只枚举，不打开；不会自动选设备或改写 Graph。</p><label>输入设备<select value={inputDevice} disabled={locked} onChange={(event) => setInputDevice(event.target.value)}><option value="">请选择输入端点</option>{devices.inputs.map((item) => <option key={item.id} value={item.id}>{item.name}{item.is_default ? "（系统默认）" : ""}</option>)}</select></label><label>输出设备<select value={outputDevice} disabled={locked} onChange={(event) => setOutputDevice(event.target.value)}><option value="">请选择输出端点</option>{devices.outputs.map((item) => <option key={item.id} value={item.id}>{item.name}{item.is_default ? "（系统默认）" : ""}</option>)}</select></label><button disabled={locked || !inputDevice || !outputDevice} onClick={applyDevices}>应用设备到 Graph</button></section>}
       </aside>
     </div>
+    <AiPanel sessionId={connection?.sessionId ?? null} nodes={nodes} disabled={!desktop || !!busy}
+      hasTask={task !== null} task={task} invokeAi={invoke} onBusyChange={setAiBusy}
+      onApplyProposal={applyAiProposal} onStartProposal={startAiProposal} onCancelTask={cancelAiTask} />
     <section className="panel task-panel" aria-labelledby="task-title"><div className="section-heading"><div><span className="step">04</span><h2 id="task-title">任务与结果</h2></div>{task && <span className={`badge ${task.state === "succeeded" ? "good" : task.state === "failed" || task.state === "unknown" ? "bad" : ""}`}>{stateLabels[task.state] ?? task.state}</span>}</div>
-      {!task ? <p className="empty-state">尚未提交任务。默认文本模板不访问设备、不创建文件，适合检查完整调用流程。</p> : <><div className="task-summary"><code>{task.id}</code><span>{stateLabels[task.state] ?? task.state}</span><button className="danger" disabled={!connection || !!busy || !canCancel(task.state) || task.sessionId !== connection.sessionId} onClick={cancelTask}>{task.state === "cancelling" ? "等待取消完成…" : "取消任务"}</button><button disabled={!!busy || taskActive} onClick={newTask}>{task.sessionId === connection?.sessionId && isTerminal(task.state) ? "释放记录 / 新任务" : "清除显示记录 / 新任务"}</button></div><p className="hint">释放只移除内存记录，不删除音频或文本文件。取消可能留下部分输出。</p>{task.state === "unknown" && <div className="banner warning">执行情况未知，请先检查文件与设备状态，再连接并手动建立新任务。</div>}{task.errors?.length ? <pre className="task-errors" role="alert">{formatError(task.errors)}</pre> : null}{task.result !== undefined ? <pre className="result-json" aria-label="任务结果 JSON">{JSON.stringify(task.result, null, 2)}</pre> : <p className="muted">{taskActive ? "每 500 ms 查询状态；取消不会阻塞界面。" : "本任务没有可用结果负载。"}</p>}</>}
+      {!task ? <p className="empty-state">尚未提交任务。默认文本模板不访问设备、不创建文件，适合检查完整调用流程。</p> : <><div className="task-summary"><code>{task.id}</code><span>{stateLabels[task.state] ?? task.state}</span><button className="danger" disabled={!connection || !!busy || aiBusy || !canCancel(task.state) || task.sessionId !== connection.sessionId} onClick={cancelTask}>{task.state === "cancelling" ? "等待取消完成…" : "取消任务"}</button><button disabled={!!busy || aiBusy || taskActive} onClick={newTask}>{task.sessionId === connection?.sessionId && isTerminal(task.state) ? "释放记录 / 新任务" : "清除显示记录 / 新任务"}</button></div><p className="hint">释放只移除内存记录，不删除音频或文本文件。取消可能留下部分输出。</p>{task.state === "unknown" && <div className="banner warning">执行情况未知，请先检查文件与设备状态，再连接并手动建立新任务。</div>}{task.errors?.length ? <pre className="task-errors" role="alert">{formatError(task.errors)}</pre> : null}{task.result !== undefined ? <pre className="result-json" aria-label="任务结果 JSON">{JSON.stringify(task.result, null, 2)}</pre> : <p className="muted">{taskActive ? "每 500 ms 查询状态；取消不会阻塞界面。" : "本任务没有可用结果负载。"}</p>}</>}
     </section>
     <footer>AudioProcess · P6 最小控制界面 <span>{busy ?? "音频处理与任务状态由 C++ 后端提供"}</span></footer>
   </main>;

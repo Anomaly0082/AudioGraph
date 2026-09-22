@@ -99,6 +99,26 @@ small, .hint, .muted { color: #93a2b8; font-size: 12px; line-height: 1.65; }
 .devices-panel select { max-width: 100%; }
 .empty-state { color: #8f9fb6; font-size: 13px; line-height: 1.85; padding: 14px 0; }
 .task-panel { margin-top: 16px; }
+.ai-panel { margin-top: 16px; }
+.ai-disclosure { margin: -5px 0 16px; padding: 11px 13px; border: 1px solid #365071; border-radius: 7px; background: #102238; color: #afc8e8; }
+.ai-config-grid { display: grid; grid-template-columns: minmax(220px, 1.4fr) minmax(150px, .7fr) minmax(220px, 1fr); gap: 12px; }
+.key-row { display: flex; gap: 7px; margin-top: 6px; }
+.key-row input { flex: 1; width: 0; }
+.key-row button { padding: 8px 11px; }
+.ai-request-label { margin-top: 15px; }
+.ai-request-label textarea { width: 100%; min-height: 92px; margin-top: 6px; resize: vertical; line-height: 1.6; }
+.ai-message { margin-top: 15px; padding: 13px 15px; border: 1px solid #32435c; border-radius: 8px; background: #101927; }
+.ai-message p { margin-top: 7px; color: #c1ccdc; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.ai-message.banner.error { margin-bottom: 0; }
+.ai-proposal { margin-top: 15px; padding: 15px; border: 1px solid #4a5d83; border-radius: 9px; background: #121c2d; }
+.ai-proposal .section-heading { margin-bottom: 8px; }
+.ai-proposal details { margin-top: 12px; }
+.ai-proposal summary { color: #aebcd0; cursor: pointer; font-size: 12px; }
+.ai-proposal .result-json { max-height: 300px; }
+.ai-file-list { list-style: none; display: grid; gap: 6px; padding: 0; margin: 12px 0 0; }
+.ai-file-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; padding: 8px 10px; background: #0e1725; border-radius: 6px; }
+.ai-file-list span { color: #b9c5d6; font-size: 12px; overflow-wrap: anywhere; }
+.ai-summary { border-color: #356554; background: #102820; }
 .task-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .task-summary > span { margin-right: auto; color: #a9b9ce; font-size: 12px; }
 .task-panel .banner { margin-top: 12px; }
@@ -123,6 +143,7 @@ footer { display: flex; gap: 15px; justify-content: space-between; color: #76879
   .input-row > input { flex: 1 1 100%; width: 100%; }
   .app-header { align-items: flex-start; }
   h1 { font-size: 25px; }
+  .ai-config-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
   .workspace-shell { width: calc(100% - 24px); padding-top: 20px; }

@@ -1,6 +1,6 @@
 # 最小桌面控制台
 
-P6 用 Tauri/React 操作已有受控任务接口。C++ 仍负责 Graph 校验、Node 和 Executor，Rust 仅管理固定的 control-cli 子进程、请求/响应和有限的配置文件读写。没有拖拽节点编辑器，也没有新增 DSP、Workflow 或 AI/MCP 连接器。
+桌面用 Tauri/React 操作已有受控任务接口。C++ 仍负责 Graph 校验、Node 和 Executor，Rust 管理固定的 control-cli 子进程、请求/响应和有限的配置文件读写。P8 增加了 [内置 AI Graph 助手](embedded-ai.md)，通过 Rust 请求模型提案，再复用同一任务接口；没有拖拽节点编辑器，也没有新增 DSP 或 Workflow。
 
 ## 构建
 
@@ -55,7 +55,7 @@ npm run tauri -- dev
 ## 代码边界
 
 - `apps/desktop/src/`：React、样式和纯界面数据处理；不实现音频算法。
-- `apps/desktop/src-tauri/src/`：Rust 窄命令、子进程生命周期、JSON 文件读取/创建。
+- `apps/desktop/src-tauri/src/`：Rust 窄命令、子进程生命周期、JSON 文件读取/创建；`ai.rs` 和 `ai_commands.rs` 是受限模型 HTTP 请求与提案校验，不实现音频算法。
 - `apps/control_cli/`、`src/control_protocol.cpp`、`src/task_service.cpp`：C++ 控制协议和任务服务。
 - Node/Graph/Executor 仍位于仓库 include/audioprocess 与 src 中，与前端框架无关。
 

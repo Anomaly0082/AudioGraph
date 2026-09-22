@@ -17,6 +17,7 @@
 - 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制。
 - 最小 MCP 适配：官方 SDK 的本地 stdio 服务，开放离线/分块任务工具；标准 MCP 客户端链路已测试，实际 AI 客户端仍需显式挂载配置。
 - 桌面控制台：Tauri/React 通过 Rust 常驻连接 control-cli，提供 Graph JSON 编辑、模板、校验、任务操作、结果和节点能力查看；不是拖拽节点编辑器。
+- 内置 AI Graph 助手：自填 OpenAI 兼容地址、模型和内存 Key，生成离线/分块提案，经本地校验和人工确认后执行，再解释真实结果；无需配置外部 MCP 客户端。
 
 ## 构建与测试
 
@@ -109,6 +110,8 @@ third_party/           固定版本 nlohmann/json、miniaudio 和许可证
 
 桌面已从旧固定 Gain 演示切换到 control-cli 任务接口。先选择工作目录并连接，再编辑/载入 Graph JSON、校验和执行；默认文本模板不访问文件或设备。节点能力、参数、任务状态、取消和结构化结果在界面查看。实时设备需明确授权，默认静音。使用流程及限制见 [桌面说明](docs/desktop.md)。
 
+也可使用新增的 AI Graph 助手，用自然语言提出文件处理需求。需要支持 Chat Completions 工具调用的模型服务；地址和模型可自填，Key 不落盘。操作步骤、数据发送范围及兼容限制见 [内置 AI 说明](docs/embedded-ai.md)。
+
 ```powershell
 cmake --build --preset debug --target control-cli
 Set-Location .\apps\desktop
@@ -125,6 +128,6 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 - 文件编解码仅 PCM16 WAV；离线 Graph 未实现采样率转换。实时会话由 miniaudio 适配设备格式，但不等于 Graph 已有转换节点。未实现 MP3/FLAC、ASR、TTS、GPU 或云端服务。
 - 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图或运行中调参；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
 - 正式分块执行仍是同步离线，不支持流式分支、混合整段/流式图或异步任务。M0 旁路工具保留，正式流式 Graph 不通过它调度。
-- 已有受控任务协议、最小 Tauri 控制台和离线 MCP 适配；真实 AI 客户端挂载需配置，尚无 Workflow 和参数搜索。AI 编排不以执行任意 Python 为前提。
+- 已有受控任务协议、最小 Tauri 控制台、离线 MCP 适配和内置 AI 提案入口；外接客户端仍需配置 MCP，内置入口直接配置模型 API。尚无 Workflow 和参数搜索，AI 不能执行任意 Python。
 - 取消是协作请求，失败可能留下部分新文件，图不提供文件事务回滚。
 - 需求与设计目录为本地讨论材料，按用户要求不提交 Git。
