@@ -14,7 +14,8 @@
 - 分块 Executor：逐级格式准备、连续帧校验、零到多块输出、按上游到下游排尾和协作取消。正式支持离线分块，尚未接麦克风。
 - 实验契约：旧流式 vector 输出和异步 future 方案仍保留为实验，不等同于正式分块或实时能力。
 - 实时 Graph：realtime_input、realtime_gain、realtime_output 注册到同一 Registry；控制线程准备线性计划，设备回调执行预分配处理器。有缓冲、时钟漂移补偿、静音探测和统计，不录音。
-- 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制，尚未接入 AI/MCP。
+- 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制。
+- 最小 MCP 适配：官方 SDK 的本地 stdio 服务，开放离线/分块任务工具；标准 MCP 客户端链路已测试，实际 AI 客户端仍需显式挂载配置。
 - 桌面控制台：Tauri/React 通过 Rust 常驻连接 control-cli，提供 Graph JSON 编辑、模板、校验、任务操作、结果和节点能力查看；不是拖拽节点编辑器。
 
 ## 构建与测试
@@ -74,7 +75,13 @@ Release 对应 `cmake --build --preset release --parallel`、`ctest --preset rel
 .\build\Debug\control-cli.exe --workspace C:\AAAProject\AudioProcess
 ```
 
-保持进程连接，逐行发送结构化 JSON 请求，例如 `{"schema_version":1,"id":"q1","op":"capabilities"}`。整段、离线分块和实时图复用同一任务生命周期；宿主默认不允许设备访问。协议、状态与安全边界见 [受控任务接口](docs/control-api.md)。桌面复用此接口；AI/MCP 连接器尚未接入。
+保持进程连接，逐行发送结构化 JSON 请求，例如 `{"schema_version":1,"id":"q1","op":"capabilities"}`。整段、离线分块和实时图复用同一任务生命周期；宿主默认不允许设备访问。协议、状态与安全边界见 [受控任务接口](docs/control-api.md)。桌面及 MCP 适配层均复用此接口。
+
+## MCP 接入
+
+`apps/mcp` 是独立 Node.js 22+ 适配层，使用固定版本官方 SDK，不依赖桌面窗口。先构建 C++ control-cli，再在 apps/mcp 中运行 `npm ci --ignore-scripts`、`npm test`。启动路径和客户端配置见 [MCP 使用说明](docs/mcp.md)。
+
+第一版只开放 offline/streaming，不开放设备或任意脚本。推荐授权独立音频数据目录；配置示例不会自动修改全局 AI 客户端设置。MCP 与桌面各自拥有自己的后台会话，不共享 task_id。
 
 ## 目录与阅读顺序
 
@@ -85,6 +92,7 @@ apps/graph_demo/       JSON/命令行协议入口
 apps/audio_cli/        保留 M0 AudioBlock 旁路实验
 apps/realtime_cli/     Windows 实时设备会话入口
 apps/control_cli/      常驻 JSON Lines 任务控制入口
+apps/mcp/              官方 SDK stdio MCP 适配与独立测试
 apps/desktop/          React + Rust/Tauri 最小控制台
 tests/                 核心、文件、配置、CLI 和契约实验测试
 examples/graphs/       可编辑 Graph 配置
@@ -117,6 +125,6 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 - 文件编解码仅 PCM16 WAV；离线 Graph 未实现采样率转换。实时会话由 miniaudio 适配设备格式，但不等于 Graph 已有转换节点。未实现 MP3/FLAC、ASR、TTS、GPU 或云端服务。
 - 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图或运行中调参；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
 - 正式分块执行仍是同步离线，不支持流式分支、混合整段/流式图或异步任务。M0 旁路工具保留，正式流式 Graph 不通过它调度。
-- 已有受控任务协议及最小 Tauri 控制台，实际 AI/MCP 接入、上层 Workflow 和参数搜索尚未实现。AI 编排不以执行任意 Python 为前提。
+- 已有受控任务协议、最小 Tauri 控制台和离线 MCP 适配；真实 AI 客户端挂载需配置，尚无 Workflow 和参数搜索。AI 编排不以执行任意 Python 为前提。
 - 取消是协作请求，失败可能留下部分新文件，图不提供文件事务回滚。
 - 需求与设计目录为本地讨论材料，按用户要求不提交 Git。

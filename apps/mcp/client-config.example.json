@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "audiograph": {
+      "command": "node",
+      "args": [
+        "C:/AAAProject/AudioProcess/apps/mcp/src/main.mjs",
+        "--workspace", "C:/AudioGraphWork",
+        "--engine", "C:/AAAProject/AudioProcess/build/Release/control-cli.exe"
+      ]
+    }
+  }
+}

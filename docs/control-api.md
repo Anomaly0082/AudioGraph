@@ -1,6 +1,6 @@
 # 受控任务接口 v1
 
-P5 将已有整段、离线分块和实时执行路径封装成任务服务。C++ `TaskService` 管任务生命周期，`task_runner` 调用相应 Executor/Session，`ControlProtocol` 做 JSON 和宿主权限适配，`control-cli` 维持标准输入/输出连接。没有启动 HTTP 服务，也没有安装 AI/MCP 连接器；P6 的 [Tauri 桌面控制台](desktop.md) 通过 Rust 常驻连接复用此协议。
+P5 将已有整段、离线分块和实时执行路径封装成任务服务。C++ `TaskService` 管任务生命周期，`task_runner` 调用相应 Executor/Session，`ControlProtocol` 做 JSON 和宿主权限适配，`control-cli` 维持标准输入/输出连接。P6 的 [Tauri 桌面控制台](desktop.md) 和 P7 的 [离线 MCP 适配](mcp.md) 均复用此协议，各自拥有独立会话；没有启动 HTTP 服务或自动改写 AI 客户端配置。
 
 ## 启动与快速实验
 
@@ -84,7 +84,7 @@ TaskService 的 status/cancel 不等待 Runner 完成。但协议控制线程仍
 
 **这不是 OS 沙箱。** 不能防止其他进程在检查后替换文件/链接，也不能隔离恶意 C++ 节点。节点可用能力由可信宿主注册；当前进程适配器只注册内置节点，不接受 DLL 路径、Shell、Python 或 eval。旧 CLI 是面向本机开发者的工具，不自动获得这个入口的路径/设备限制。此服务不应直接暴露到不可信网络。
 
-文件仍不覆盖，失败/取消可能保留部分新文件。未实现图历史回滚、事务、审计数据库、Artifact Store、Workflow 或训练；AI/MCP 适配仍是后续步骤，不把“已有协议和桌面”当成“已接好 AI”。
+文件仍不覆盖，失败/取消可能保留部分新文件。未实现图历史回滚、事务、审计数据库、Artifact Store、Workflow 或训练。P7 MCP 服务已经实现，但真实 AI 客户端仍需挂载，不把“SDK 客户端测试通过”当成“当前聊天已经能直接调用”。
 
 ## C++ 阅读顺序
 
