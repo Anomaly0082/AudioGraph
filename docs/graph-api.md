@@ -25,6 +25,8 @@ JSON Schema 为编辑器提供结构提示；最终以 C++ 检查为准。运行
 
 NodeRegistry 保存权威端口描述与参数 Schema，工厂创建 ISyncNode。相同契约的新增节点只需注册，不要求 Executor 按具体类分支。
 
+Number参数可声明`integer_only: true`（默认false），Registry在配置预检时拒绝非整数值，能力目录同步公开该约束。P10的`audio_resample.sample_rate`使用它；这指数学上的整数值，不要求JSON字面量必须省略`.0`，与`schema_version`的编码规则不同。
+
 流式节点通过 register_stream_type 注册，create_stream 创建 IStreamNode，并验证 Source/Processor/Sink 角色及实际接口。流式必须通过流工厂，不能伪装成普通同步 Node。能力发现附加 stream_role，旧字段保留。
 
 ```cpp

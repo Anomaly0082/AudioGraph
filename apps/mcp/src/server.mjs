@@ -5,6 +5,7 @@ export const TOOL_NAMES = Object.freeze([
   'audio_capabilities',
   'audio_list_nodes',
   'audio_describe_node',
+  'audio_inspect',
   'audio_validate_graph',
   'audio_start_task',
   'audio_task_status',
@@ -49,6 +50,10 @@ const typeInput = z.strictObject({
 });
 const taskInput = z.strictObject({
   task_id: z.string().min(1).max(256).describe('Task ID returned by audio_start_task.'),
+});
+const inspectInput = z.strictObject({
+  path: z.string().min(1).max(4096)
+    .describe('Explicit path to an existing PCM16 WAV file inside the fixed host workspace.'),
 });
 
 const errorDetail = z.looseObject({
@@ -208,6 +213,13 @@ export function createAudioServer(client) {
     inputSchema: typeInput,
     annotations: annotations(true),
   }, ({ type }) => ({ op: 'nodes.describe', type }), exposedNode);
+
+  register(server, client, 'audio_inspect', {
+    title: 'Inspect a PCM16 WAV file',
+    description: 'Read validated WAV header metadata for one explicit existing file inside the fixed host workspace. Returns no audio samples and does not infer a path from natural language.',
+    inputSchema: inspectInput,
+    annotations: annotations(true),
+  }, ({ path }) => ({ op: 'audio.inspect', path }));
 
   register(server, client, 'audio_validate_graph', {
     title: 'Validate an audio graph',

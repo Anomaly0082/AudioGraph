@@ -1,8 +1,12 @@
 #include "audioprocess/control_protocol.h"
+#include "audioprocess/audio_buffer.h"
 #include "audioprocess/graph_codec.h"
 #include "audioprocess/realtime_graph_executor.h"
+#include "audioprocess/wav_file.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <thread>
@@ -37,6 +41,48 @@ Json file_graph(const std::string& path) {
                                     {"to", {{"node", "sink"}, {"port", "text"}}}});
     return graph;
 }
+Json denoise_graph() {
+    return {{"schema_version", 1}, {"nodes", Json::array({
+        {{"id", "input"}, {"type", "wav_input"}, {"parameters", {{"path", "noisy.wav"}}}},
+        {{"id", "denoise"}, {"type", "rnnoise_denoise"}, {"parameters", Json::object()}},
+        {{"id", "output"}, {"type", "wav_output"}, {"parameters", {{"path", "clean.wav"}}}}
+    })}, {"connections", Json::array({
+        {{"from", {{"node", "input"}, {"port", "audio"}}},
+         {"to", {{"node", "denoise"}, {"port", "audio"}}}},
+        {{"from", {{"node", "denoise"}, {"port", "audio"}}},
+         {"to", {{"node", "output"}, {"port", "audio"}}}}
+    })}, {"exports", Json::array({
+        {{"name", "output_file"}, {"node", "output"}, {"port", "path"}}
+    })}};
+}
+Json converted_denoise_graph(bool include_downmix = true, bool include_resample = true) {
+    Json nodes = Json::array({
+        {{"id", "input"}, {"type", "wav_input"}, {"parameters", {{"path", "stereo-44k.wav"}}}}
+    });
+    Json connections = Json::array();
+    std::string previous = "input";
+    if (include_downmix) {
+        nodes.push_back({{"id", "downmix"}, {"type", "audio_downmix_mono"}, {"parameters", Json::object()}});
+        connections.push_back({{"from", {{"node", previous}, {"port", "audio"}}},
+                               {"to", {{"node", "downmix"}, {"port", "audio"}}}});
+        previous = "downmix";
+    }
+    if (include_resample) {
+        nodes.push_back({{"id", "resample"}, {"type", "audio_resample"},
+                         {"parameters", {{"sample_rate", 48000}}}});
+        connections.push_back({{"from", {{"node", previous}, {"port", "audio"}}},
+                               {"to", {{"node", "resample"}, {"port", "audio"}}}});
+        previous = "resample";
+    }
+    nodes.push_back({{"id", "denoise"}, {"type", "rnnoise_denoise"}, {"parameters", Json::object()}});
+    nodes.push_back({{"id", "output"}, {"type", "wav_output"}, {"parameters", {{"path", "converted-clean.wav"}}}});
+    connections.push_back({{"from", {{"node", previous}, {"port", "audio"}}},
+                           {"to", {{"node", "denoise"}, {"port", "audio"}}}});
+    connections.push_back({{"from", {{"node", "denoise"}, {"port", "audio"}}},
+                           {"to", {{"node", "output"}, {"port", "audio"}}}});
+    return {{"schema_version", 1}, {"nodes", nodes}, {"connections", connections},
+        {"exports", Json::array({{{"name", "file"}, {"node", "output"}, {"port", "path"}}})}};
+}
 Json graph_command(const char* op, const Json& graph, const char* mode = "offline") {
     auto command = request(op); command["mode"] = mode; command["graph"] = graph; return command;
 }
@@ -56,11 +102,91 @@ Json wait_result(ap::ControlProtocol& protocol, const std::string& id) {
     }
     throw std::runtime_error("Timed out waiting for controlled task");
 }
+void write_denoise_fixture(const std::filesystem::path& path) {
+    constexpr std::uint32_t frame_count = 961;
+    ap::AudioBuffer buffer({48'000, 1}, frame_count);
+    auto block = buffer.block(frame_count);
+    std::uint32_t noise = 0x93d765ddU;
+    for (std::uint32_t index = 0; index < frame_count; ++index) {
+        noise = noise * 1664525U + 1013904223U;
+        const auto random = static_cast<float>((noise >> 8U) * (1.0 / 16777215.0));
+        block.samples[index] = static_cast<float>(0.2 * std::sin(2.0 * 3.141592653589793 * 220.0 * index / 48'000.0) +
+            0.05 * (2.0 * random - 1.0));
+    }
+    ap::WavFileSink sink(path, {48'000, 1}, frame_count);
+    sink.write(block);
+    sink.finalize();
+}
+void write_stereo_44k_fixture(const std::filesystem::path& path, std::uint32_t frames = 4411) {
+    ap::AudioBuffer buffer({44'100, 2}, frames);
+    auto block = buffer.block(frames);
+    for (std::uint32_t frame = 0; frame < frames; ++frame) {
+        block.samples[frame * 2] = static_cast<float>(0.18 * std::sin(2.0 * 3.141592653589793 * 330.0 * frame / 44'100.0));
+        block.samples[frame * 2 + 1] = static_cast<float>(0.12 * std::sin(2.0 * 3.141592653589793 * 770.0 * frame / 44'100.0));
+    }
+    ap::WavFileSink sink(path, {44'100, 2}, frames);
+    sink.write(block); sink.finalize();
+}
+void write_chunk_flood_wav(const std::filesystem::path& path) {
+    std::ofstream output(path, std::ios::binary);
+    const auto u16 = [&](std::uint16_t value) { output.write(reinterpret_cast<const char*>(&value), 2); };
+    const auto u32 = [&](std::uint32_t value) { output.write(reinterpret_cast<const char*>(&value), 4); };
+    output.write("RIFF", 4); u32(4 + 1025 * 8 + 24 + 8); output.write("WAVE", 4);
+    for (int index = 0; index < 1025; ++index) { output.write("JUNK", 4); u32(0); }
+    output.write("fmt ", 4); u32(16); u16(1); u16(1); u32(48000); u32(96000); u16(2); u16(16);
+    output.write("data", 4); u32(0);
+}
 void test_discovery_and_lifecycle(const Workspace& work) {
     ap::ControlProtocol protocol({work.root});
     const auto capabilities = send(protocol, request("capabilities"));
     require(capabilities.at("data").at("limits").at("retained_tasks") == 16, "Missing service capacity");
     require(!capabilities.at("data").at("policy").at("allow_devices").get<bool>(), "Devices not opt-in");
+    const auto listed = send(protocol, request("nodes.list"));
+    const auto resample = std::find_if(listed.at("data").at("nodes").begin(),
+        listed.at("data").at("nodes").end(), [](const Json& node) { return node.at("typeId") == "audio_resample"; });
+    require(resample != listed.at("data").at("nodes").end() &&
+            resample->at("parameters").at(0).at("integer_only") == true,
+            "audio_resample catalog omitted the integer-only sample rate contract");
+    const auto denoise = std::find_if(listed.at("data").at("nodes").begin(),
+        listed.at("data").at("nodes").end(), [](const Json& node) {
+            return node.at("typeId") == "rnnoise_denoise";
+        });
+    require(denoise != listed.at("data").at("nodes").end() &&
+            denoise->at("execution_domain") == "synchronous" &&
+            denoise->at("parameters").empty(), "RNNoise denoise is missing from controlled discovery");
+    auto denoise_description = request("nodes.describe");
+    denoise_description["type"] = "rnnoise_denoise";
+    require(send(protocol, denoise_description).at("data").at("node").at("typeId") == "rnnoise_denoise",
+            "Controlled node description cannot resolve RNNoise denoise");
+    const auto denoise_validation = send(protocol, graph_command("graph.validate", denoise_graph()));
+    require(denoise_validation.at("success").get<bool>() &&
+            denoise_validation.at("data").at("node_count") == 3,
+            "Controlled graph validation rejected the offline RNNoise WAV graph");
+    require(!std::filesystem::exists(work.root / "clean.wav"),
+            "Controlled RNNoise graph validation created an output file");
+    auto wrong_mode = send(protocol, graph_command("graph.validate", denoise_graph(), "streaming"));
+    require(!wrong_mode.at("success").get<bool>() &&
+            wrong_mode.at("errors").at(0).at("code") == "unsupported_execution_domain",
+            "Controlled API accepted RNNoise as a streaming node");
+    auto realtime_graph = denoise_graph();
+    realtime_graph["exports"] = Json::array();
+    wrong_mode = send(protocol, graph_command("graph.validate", realtime_graph, "realtime"));
+    require(!wrong_mode.at("success").get<bool>() &&
+            wrong_mode.at("errors").at(0).at("code") == "unsupported_execution_domain",
+            "Controlled API accepted RNNoise as a realtime node");
+
+    write_denoise_fixture(work.root / "noisy.wav");
+    const auto denoise_started = send(protocol, graph_command("tasks.start", denoise_graph()));
+    require(denoise_started.at("success").get<bool>(), "Controlled RNNoise WAV task did not start");
+    const auto denoise_id = denoise_started.at("data").at("task_id").get<std::string>();
+    const auto denoise_result = wait_result(protocol, denoise_id);
+    require(denoise_result.at("data").at("state") == "succeeded" &&
+            denoise_result.at("data").at("result").at("outputs").at("output_file").at("value") ==
+                ap::path_to_utf8(work.root / "clean.wav"),
+            "Controlled RNNoise WAV task did not publish its output file");
+    ap::WavFileSource denoised(work.root / "clean.wav", 257);
+    require(denoised.format() == ap::AudioFormat{48'000, 1} && denoised.total_frames() == 961,
+            "Controlled RNNoise WAV task changed format or frame count");
     auto description = request("nodes.describe"); description["type"] = "realtime_gain";
     require(send(protocol, description).at("data").at("node").contains("realtime_capabilities"), "Capability metadata lost");
     const auto validation = send(protocol, graph_command("graph.validate", text_graph()));
@@ -123,6 +249,72 @@ void test_file_boundary(const Workspace& work) {
     id = started.at("data").at("task_id").get<std::string>();
     require(wait_result(protocol, id).at("data").at("state") == "failed", "Existing output was overwritten");
 }
+void test_audio_inspection(const Workspace& work) {
+    ap::ControlProtocol protocol({work.root});
+    const auto wav = work.root / "Inspect.WAV";
+    write_stereo_44k_fixture(wav, 4410);
+    auto inspect = request("audio.inspect"); inspect["path"] = "Inspect.WAV";
+    const auto response = send(protocol, inspect);
+    require(response.at("success").get<bool>(), "audio.inspect rejected an in-workspace uppercase WAV");
+    const auto& data = response.at("data");
+    require(data.at("path") == "Inspect.WAV" &&
+            data.at("sample_rate") == 44100 && data.at("channels") == 2 &&
+            data.at("frame_count") == 4410 && data.at("duration_seconds") == 0.1 &&
+            data.at("encoding") == "pcm_s16le", "audio.inspect metadata mismatch");
+
+    for (const auto& path : {std::string("../outside.wav"), ap::path_to_utf8(work.parent / "outside.wav")}) {
+        inspect["path"] = path; error(protocol, inspect, "path_not_allowed");
+    }
+    inspect["path"] = "."; error(protocol, inspect, "audio_not_file");
+    inspect["path"] = "missing.wav"; error(protocol, inspect, "audio_not_file");
+    std::ofstream(work.root / "not-audio.txt") << "RIFF";
+    inspect["path"] = "not-audio.txt"; error(protocol, inspect, "unsupported_audio_format");
+    std::ofstream(work.root / "bad.wav", std::ios::binary) << "RIFFbad";
+    inspect["path"] = "bad.wav"; error(protocol, inspect, "audio_inspect_failed");
+    write_chunk_flood_wav(work.root / "chunk-flood.wav");
+    inspect["path"] = "chunk-flood.wav"; error(protocol, inspect, "audio_inspect_failed");
+    for (const auto invalid : {Json(), Json(""), Json(std::string(4097, 'x')), Json(7)}) {
+        inspect["path"] = invalid; error(protocol, inspect, "invalid_request");
+    }
+
+    const auto outside = work.parent / "outside.wav";
+    write_stereo_44k_fixture(outside, 10);
+    std::error_code link_error;
+    std::filesystem::create_symlink(outside, work.root / "escape-link.wav", link_error);
+    if (!link_error) {
+        inspect["path"] = "escape-link.wav"; error(protocol, inspect, "path_not_allowed");
+    }
+}
+
+void test_format_conversion_denoise_graph(const Workspace& work) {
+    write_stereo_44k_fixture(work.root / "stereo-44k.wav");
+    ap::ControlProtocol protocol({work.root});
+    const auto graph = converted_denoise_graph();
+    const auto validation = send(protocol, graph_command("graph.validate", graph));
+    require(validation.at("success").get<bool>() && !std::filesystem::exists(work.root / "converted-clean.wav"),
+            "conversion graph validation failed or created output");
+    auto fractional = graph;
+    for (auto& node : fractional["nodes"]) {
+        if (node["type"] == "audio_resample") node["parameters"]["sample_rate"] = 8000.5;
+    }
+    error(protocol, graph_command("graph.validate", fractional), "invalid_parameter");
+    const auto started = send(protocol, graph_command("tasks.start", graph));
+    require(started.at("success").get<bool>(), "44.1 kHz stereo conversion graph did not start");
+    const auto result = wait_result(protocol, started.at("data").at("task_id").get<std::string>());
+    require(result.at("data").at("state") == "succeeded", "converted RNNoise graph failed");
+    ap::WavFileSource output(work.root / "converted-clean.wav", 127);
+    const auto expected_frames = (4411ULL * 48000ULL + 44100ULL - 1ULL) / 44100ULL;
+    require(output.format() == ap::AudioFormat{48000, 1} && output.total_frames() == expected_frames,
+            "converted RNNoise WAV format or ceil duration policy mismatch");
+
+    for (const auto bad_graph : {converted_denoise_graph(false, true), converted_denoise_graph(true, false)}) {
+        std::error_code ignored; std::filesystem::remove(work.root / "converted-clean.wav", ignored);
+        const auto bad_started = send(protocol, graph_command("tasks.start", bad_graph));
+        require(bad_started.at("success").get<bool>(), "format-error graph was rejected before task diagnostics");
+        const auto bad_result = wait_result(protocol, bad_started.at("data").at("task_id").get<std::string>());
+        require(bad_result.at("data").at("state") == "failed", "RNNoise accepted an unconverted channel/rate format");
+    }
+}
 } // namespace
 
 int main() {
@@ -131,6 +323,8 @@ int main() {
         test_discovery_and_lifecycle(work);
         test_protocol_and_permissions(work);
         test_file_boundary(work);
+        test_audio_inspection(work);
+        test_format_conversion_denoise_graph(work);
         std::cout << "Control protocol tests passed without device access.\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

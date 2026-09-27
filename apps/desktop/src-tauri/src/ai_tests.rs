@@ -1,7 +1,7 @@
 use super::*;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}, mpsc};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -35,6 +35,7 @@ fn proposal(node_type: &str, extra: &str) -> String {
 
 struct MockHttp {
     base_url: String,
+    stop: Arc<AtomicBool>,
     request: mpsc::Receiver<Vec<u8>>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -45,9 +46,12 @@ impl MockHttp {
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
         let (sender, request) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
         let thread = thread::spawn(move || {
             let deadline = std::time::Instant::now() + Duration::from_secs(2);
             let mut stream = loop {
+                if stop_for_thread.load(Ordering::Acquire) { return; }
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
@@ -56,11 +60,17 @@ impl MockHttp {
                     Err(_) => return,
                 }
             };
+            // Keep the accepted stream blocking even if the platform inherits listener flags.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut bytes = Vec::new();
             let mut buffer = [0_u8; 4096];
             loop {
-                let count = stream.read(&mut buffer).unwrap_or(0);
+                let count = match stream.read(&mut buffer) {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                };
                 if count == 0 { break; }
                 bytes.extend_from_slice(&buffer[..count]);
                 if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
@@ -74,10 +84,16 @@ impl MockHttp {
             if !hold.is_zero() { thread::sleep(hold); }
             let _ = stream.write_all(&raw_response);
         });
-        Self { base_url: format!("http://{address}/v1"), request, thread: Some(thread) }
+        Self { base_url: format!("http://{address}/v1"), stop, request, thread: Some(thread) }
     }
 }
-impl Drop for MockHttp { fn drop(&mut self) { if let Some(thread) = self.thread.take() { let _ = thread.join(); } } }
+impl Drop for MockHttp {
+    fn drop(&mut self) {
+        // Stop only this fixture; connecting to a released ephemeral port can hit another test's listener.
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+    }
+}
 
 #[test]
 fn endpoint_policy_is_https_or_loopback_http_and_never_accepts_ambiguous_targets() {
@@ -278,11 +294,21 @@ fn mock_model_validates_without_writing_then_explicit_approval_runs_real_wav_and
     let generate_server = MockHttp::once(http_json(&response(Some(&arguments), "propose_audio_graph")), Duration::ZERO);
     let generated = tauri::async_runtime::block_on(crate::ai_commands::generate_impl(
         Arc::new(AiManager::default()), fixture.backend(), "ai-e2e-session".into(), "generate-1".into(),
-        config(generate_server.base_url.clone(), "dummy-only"), "halve input.wav into output.wav".into())).unwrap();
+        config(generate_server.base_url.clone(), "dummy-only"), "halve the selected WAV into output.wav".into(),
+        Some("input.wav".into()))).unwrap();
+    assert_eq!(generated.inspection.as_ref().unwrap()["sample_rate"], 48000);
     let proposal = generated.proposal.unwrap();
     assert!(!fixture.root.join("output.wav").exists(), "generation and graph.validate must remain read-only");
     let generation_http = String::from_utf8_lossy(&generate_server.request.recv_timeout(Duration::from_secs(2)).unwrap()).into_owned();
-    assert!(generation_http.split("\r\n\r\n").nth(1).unwrap().contains("propose_audio_graph"));
+    let generation_body: Value = serde_json::from_str(generation_http.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(generation_body["tools"].as_array().unwrap().len(), 1);
+    let system = generation_body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("propose_audio_graph") && system.contains("input_audio"));
+    let user: Value = serde_json::from_str(generation_body["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(user["input_audio"]["sample_rate"], 48000);
+    assert_eq!(user["input_audio"]["channels"], 1);
+    assert_eq!(user["input_audio"]["frame_count"], 4);
+    assert_eq!(user["input_audio"]["path"], "input.wav");
 
     // 这一步代表用户在UI中明确点击确认；此前没有tasks.start。
     let started = fixture.backend().request("ai-e2e-session", json!({"op":"tasks.start",
@@ -310,4 +336,100 @@ fn mock_model_validates_without_writing_then_explicit_approval_runs_real_wav_and
     let summary_http = String::from_utf8_lossy(&summary_server.request.recv_timeout(Duration::from_secs(2)).unwrap()).into_owned();
     let summary_body: Value = serde_json::from_str(summary_http.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert!(summary_body.get("tools").is_none(), "summary must be an independent no-tools request");
+}
+
+#[cfg(windows)]
+#[test]
+fn explicit_input_inspection_failure_short_circuits_before_model_http() {
+    let fixture = AiE2eFixture::new();
+    write_pcm16_wav(&fixture.root.join("mentioned-in-prompt.wav"), &[1, 2, 3, 4]);
+    let server = MockHttp::once(http_json(&response(None, "")), Duration::ZERO);
+    let result = tauri::async_runtime::block_on(crate::ai_commands::generate_impl(
+        Arc::new(AiManager::default()), fixture.backend(), "ai-e2e-session".into(), "inspect-fail".into(),
+        config(server.base_url.clone(), "dummy-only"),
+        "Use mentioned-in-prompt.wav, but the explicit selector is authoritative.".into(),
+        Some("missing-explicit.wav".into())));
+    assert!(result.err().expect("missing explicit input unexpectedly succeeded").contains("未发送模型请求"));
+    assert!(server.request.recv_timeout(Duration::from_millis(100)).is_err(),
+        "failed explicit inspection still contacted the model or guessed a path from prompt text");
+}
+
+/// Paid integration probe: never part of normal cargo test, never retries.
+/// Only use with explicit approval. Read credentials from a closed stdin pipe, not files or argv.
+/// Provider-specific cost controls below differ from the default desktop request.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires explicit approval and credential on stdin; makes at most two paid requests"]
+fn live_deepseek_bounded_graph_roundtrip() {
+    assert_eq!(std::env::var("AUDIOPROCESS_LIVE_APPROVED").as_deref(), Ok("yes"), "live test not approved");
+    // Not an environment variable: the C++ sidecar must not inherit a model credential.
+    let mut api_key = String::new();
+    std::io::stdin().lock().take(4097).read_to_string(&mut api_key).expect("cannot read live credential");
+    assert!(api_key.len() <= 4096, "live credential too long");
+    assert!(!api_key.trim().is_empty(), "live credential empty");
+    let config = AiConfig { base_url: "https://api.deepseek.com".into(), model: "deepseek-flash".into(), api_key };
+    let fixture = AiE2eFixture::new();
+    write_pcm16_wav(&fixture.root.join("input.wav"), &[8192; 4800]);
+    let catalog = fixture.backend().request("ai-e2e-session", json!({"op":"nodes.list"})).unwrap();
+    let nodes = catalog_nodes(&catalog).unwrap();
+    let prompt = "用整段离线模式读取 input.wav，降低 6.020599913 dB，保存到新的 output.wav。请生成 wav_input → gain → wav_output 三节点图，导出输出文件路径。无需额外处理，说明尽量简短。";
+    let mut body = build_generate_body(&config.model, prompt, &nodes, None).unwrap();
+    body["max_tokens"] = json!(1536);
+    body["thinking"] = json!({"type":"disabled"});
+    println!("LIVE generation: one request, max output 1536, thinking disabled; no retry");
+    let response = tauri::async_runtime::block_on(request_completion(&config, body)).unwrap();
+    let generated = parse_generation(response, "live-generate".into(), &nodes).unwrap();
+    println!("LIVE generation usage: {}", generated.usage.unwrap_or(Value::Null));
+    let proposal = generated.proposal.expect("model returned no tool proposal; stopping without retry");
+    assert_eq!(proposal.mode, "offline");
+    let graph_nodes = proposal.graph["nodes"].as_array().unwrap();
+    assert_eq!(graph_nodes.len(), 3, "unexpected plan; do not execute");
+    for kind in ["wav_input", "gain", "wav_output"] {
+        assert_eq!(graph_nodes.iter().filter(|node| node["type"] == kind).count(), 1, "unexpected plan; do not execute");
+    }
+    for node in graph_nodes {
+        match node["type"].as_str().unwrap() {
+            "wav_input" => assert_eq!(node["parameters"]["path"], "input.wav"),
+            "wav_output" => assert_eq!(node["parameters"]["path"], "output.wav"),
+            "gain" => assert!((node["parameters"]["gain_db"].as_f64().unwrap() + 6.020599913).abs() < 0.001),
+            _ => panic!("unexpected node; do not execute"),
+        }
+    }
+    let validation = fixture.backend().request("ai-e2e-session", json!({"op":"graph.validate",
+        "mode":proposal.mode,"graph":proposal.graph,"options":proposal.options})).unwrap();
+    assert_eq!(validation["success"], true, "live proposal failed C++ validation");
+    assert!(!fixture.root.join("output.wav").exists());
+    println!("LIVE proposal: registered nodes and C++ validation passed; no output before explicit test approval");
+    // User-approved test, further restricted above to synthetic input and one new output.
+    let started = fixture.backend().request("ai-e2e-session", json!({"op":"tasks.start",
+        "mode":proposal.mode,"graph":proposal.graph,"options":proposal.options})).unwrap();
+    assert_eq!(started["success"], true);
+    let task_id = started["data"]["task_id"].as_str().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let status = fixture.backend().request("ai-e2e-session", json!({"op":"tasks.status","task_id":task_id})).unwrap();
+        assert_eq!(status["success"], true);
+        let state = status["data"]["state"].as_str().unwrap();
+        if state == "succeeded" { break; }
+        assert!(matches!(state, "queued" | "running"), "live audio task failed");
+        assert!(std::time::Instant::now() < deadline, "live audio task timed out");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let result = fixture.backend().request("ai-e2e-session", json!({"op":"tasks.result","task_id":task_id})).unwrap();
+    assert_eq!(result["success"], true);
+    let output = std::fs::read(fixture.root.join("output.wav")).unwrap();
+    assert_eq!(output.len(), 44 + 4800 * 2);
+    assert!(output[44..].chunks_exact(2).all(|sample|
+        (i16::from_le_bytes([sample[0], sample[1]]) as i32 - 4096).abs() <= 1));
+    println!("LIVE C++ output verified: 4800 frames, all PCM16 samples approximately 4096 (input 8192)");
+    let mut summary_body = build_summary_body(&config.model, prompt, &proposal, &result["data"]).unwrap();
+    assert!(summary_body.get("tools").is_none());
+    summary_body["max_tokens"] = json!(256);
+    summary_body["thinking"] = json!({"type":"disabled"});
+    println!("LIVE summary: one request, max output 256, no tools, no retry");
+    let response = tauri::async_runtime::block_on(request_completion(&config, summary_body)).unwrap();
+    let summary = parse_summary(response, "live-summary".into()).unwrap();
+    assert!(!summary.text.is_empty());
+    println!("LIVE summary usage: {}", summary.usage.unwrap_or(Value::Null));
+    println!("LIVE PASS: two requests; no audio uploaded; credentials not persisted");
 }

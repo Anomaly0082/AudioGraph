@@ -205,7 +205,7 @@ impl Connection {
         if !self.shared.alive.load(Ordering::Acquire) { return Err("连接已失效，请重新连接；不要自动重试可能已执行的启动请求。".into()); }
         let object = request.as_object_mut().ok_or("请求必须是JSON对象")?;
         let op = object.get("op").and_then(Value::as_str).ok_or("请求缺少op")?;
-        if !["capabilities", "nodes.list", "nodes.describe", "devices.list", "graph.validate", "tasks.start",
+        if !["capabilities", "nodes.list", "nodes.describe", "devices.list", "audio.inspect", "graph.validate", "tasks.start",
               "tasks.status", "tasks.cancel", "tasks.result", "tasks.release"].contains(&op) {
             return Err("未开放的控制操作".into());
         }

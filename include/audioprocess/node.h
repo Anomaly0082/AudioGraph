@@ -61,6 +61,8 @@ struct ParameterDescriptor {
     std::optional<double> maximum;
     std::string unit;
     std::vector<std::string> enum_values;
+    // Number 参数的可选约束，统一在配置预检阶段验证；不引入第二种数值类型。
+    bool integer_only{false};
 };
 
 struct NodeDescriptor {

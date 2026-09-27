@@ -1,6 +1,6 @@
 export type Mode = "offline" | "streaming" | "realtime";
 export type TaskState = "queued" | "running" | "cancelling" | "succeeded" | "failed" | "cancelled";
-export type TemplateKind = "text" | "wav" | "stream" | "realtime";
+export type TemplateKind = "text" | "wav" | "denoise" | "stream" | "realtime";
 
 export type GraphNode = {
   id: string;
@@ -178,6 +178,24 @@ export function createTemplate(kind: TemplateKind): { mode: Mode; graph: GraphDo
   if (kind === "text") return { mode: "offline", graph: {
     schema_version: 1, nodes: [{ id: "text", type: "text_input", parameters: { text: "你好，AudioProcess。" } }],
     connections: [], exports: [{ name: "message", node: "text", port: "text" }],
+  } };
+  if (kind === "denoise") return { mode: "offline", graph: {
+    schema_version: 1,
+    nodes: [
+      { id: "input", type: "wav_input", parameters: { path: "input.wav" } },
+      { id: "mono", type: "audio_downmix_mono" },
+      { id: "resample", type: "audio_resample", parameters: { sample_rate: 48000 } },
+      { id: "denoise", type: "rnnoise_denoise" },
+      { id: "output", type: "wav_output", parameters: { path: "denoised.wav" } },
+    ],
+    connections: [
+      { from: { node: "input", port: "audio" }, to: { node: "mono", port: "audio" } },
+      { from: { node: "mono", port: "audio" }, to: { node: "resample", port: "audio" } },
+      { from: { node: "resample", port: "audio" }, to: { node: "denoise", port: "audio" } },
+      { from: { node: "denoise", port: "audio" }, to: { node: "output", port: "audio" } },
+    ],
+    exports: [{ name: "file", node: "output", port: "path" },
+      { name: "clipped", node: "output", port: "clipped_samples" }],
   } };
   if (kind === "realtime") return { mode: "realtime", graph: {
     schema_version: 1,

@@ -45,6 +45,7 @@ P5 将已有整段、离线分块和实时执行路径封装成任务服务。C+
 | nodes.list | 无 | 返回已注册节点及端口/参数/能力描述 |
 | nodes.describe | type | 返回指定节点描述 |
 | devices.list | 无 | 获得宿主设备权限后枚举设备，不启动音频 |
+| audio.inspect | path | 只读查询工作区内PCM16 WAV头信息，返回path/sample_rate/channels/frame_count/duration_seconds/encoding |
 | graph.validate | mode、graph、可选 options | 复用图校验，并检查宿主文件边界，不创建节点/输出或打开设备 |
 | tasks.start | 同 graph.validate | 验证通过后提交请求快照，立即返回 task_id 和当前状态 |
 | tasks.status | task_id | 查询状态和适用错误，不复制音频或大结果 |
@@ -53,6 +54,8 @@ P5 将已有整段、离线分块和实时执行路径封装成任务服务。C+
 | tasks.release | task_id | 仅删除终态的内存记录，不删除产物文件 |
 
 nodes.list 的 data 沿用旧节点目录结构，内含 nodes；nodes.describe 的 data 内含 node。已注册不代表任意运行模式都支持：根据节点执行契约选择，混合不兼容模式会被拒绝。
+
+`audio.inspect`的path最多4096字节，相对路径基于workspace。它要求现存普通WAV文件并遵守同一目录边界（解析符号链接后检查），不启动任务、不读取完整采样或评估音质。失败保留`/path`定位；图校验本身仍不读取音频文件。查询示例：`{"schema_version":1,"id":"probe1","op":"audio.inspect","path":"input.wav"}`。格式转换节点及手动验收见 [音频格式适配](audio-format.md)。
 
 ## 执行选项
 

@@ -41,6 +41,7 @@ node .\src\main.mjs --workspace C:\AudioGraphWork --engine C:\AAAProject\AudioPr
 | audio_capabilities | 当前适配层模式、权限和限额 |
 | audio_list_nodes | 可用节点的精简目录 |
 | audio_describe_node | 指定节点的端口、参数及约束 |
+| audio_inspect | 只读查询工作区内指定PCM16 WAV的格式、帧数和时长 |
 | audio_validate_graph | 校验完整 Graph 和执行选项，不运行节点 |
 | audio_start_task | 提交 Graph，返回 task_id 和当前状态 |
 | audio_task_status | 查询当前任务状态 |
@@ -51,6 +52,8 @@ node .\src\main.mjs --workspace C:\AudioGraphWork --engine C:\AAAProject\AudioPr
 具体输入以客户端 tools/list 返回的 JSON Schema 为准。图仍采用 Graph v1，参数及模式的业务校验由 C++ 最终裁定；不兼容模式、未知字段、越界路径或已存在输出会被拒绝。
 
 校验不会检查输入音频是否存在或输出文件是否已存在；这些运行条件在执行阶段检查。已有输出会使任务失败，而不是让纯 Graph 校验产生文件副作用。
+
+需要按实际输入格式编排时先调用`audio_inspect`，不要猜测采样率/声道。该只读查询不上传音频也不自动转换；P10新增`audio_downmix_mono`和`audio_resample`，可以显式接到RNNoise之前。工具总数现为10，详情见 [格式适配](audio-format.md)。
 
 Graph、节点、连接及 exports 的结构会在工具 Schema 中明确列出；节点 parameters 的字段和值仍交给 C++ Registry 校验。原始输入拒绝重复键、无效 UTF-8，以及 graph.schema_version 的浮点/指数写法，避免协议转换静默改变配置含义。
 

@@ -1,0 +1,4 @@
+# Preserve the exact upstream source and generated model bytes recorded in SHA256SUMS.
+* -text
+# Generated model weights are reviewed by provenance/hash, not a 29 MB text diff.
+src/rnnoise_data.c -diff

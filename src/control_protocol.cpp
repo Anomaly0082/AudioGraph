@@ -3,12 +3,14 @@
 #include "audioprocess/prototype_nodes.h"
 #include "audioprocess/realtime_graph_executor.h"
 #include "audioprocess/task_runner.h"
+#include "audioprocess/wav_file.h"
 #ifdef _WIN32
 #include "audioprocess/realtime_session.h"
 #endif
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cctype>
 #include <set>
 
 namespace audioprocess {
@@ -119,27 +121,69 @@ TaskRequest graph_request(const Json& request, const NodeRegistry& registry, con
     return task;
 }
 
+std::filesystem::path resolve_control_path(const std::filesystem::path& path, const ControlPolicy& policy) {
+#ifdef _WIN32
+    if (!path.is_absolute() && (path.has_root_name() || path.has_root_directory()))
+        throw ExecutionError("invalid_path", "Partially qualified Windows paths are not allowed", {}, {}, {}, "/path");
+#endif
+    const auto candidate = path.is_absolute() ? path : policy.workspace / path;
+    std::error_code error;
+    const auto resolved = std::filesystem::weakly_canonical(candidate, error);
+    bool inside = !error && resolved.is_absolute();
+    auto target_part = resolved.begin();
+    for (auto root_part = policy.workspace.begin(); inside && root_part != policy.workspace.end(); ++root_part) {
+        if (target_part == resolved.end() || *root_part != *target_part) { inside = false; break; }
+        ++target_part;
+    }
+    if (!inside)
+        throw ExecutionError("path_not_allowed", "File path escapes the host workspace or cannot be resolved", {}, {}, {}, "/path");
+    return resolved;
+}
+
+Json inspect_audio(const Json& request, const ControlPolicy& policy) {
+    fields(request, {"schema_version", "id", "op", "path"});
+    const auto requested = path_from_utf8(text_field(request, "path", 4096));
+    const auto path = resolve_control_path(requested, policy);
+    std::error_code error;
+    const auto status = std::filesystem::status(path, error);
+    if (error || !std::filesystem::exists(status) || !std::filesystem::is_regular_file(status))
+        throw ExecutionError("audio_not_file", "Audio inspection requires an existing regular file", {}, {}, {}, "/path");
+    auto extension = path.extension().string();
+    std::ranges::transform(extension, extension.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    if (extension != ".wav")
+        throw ExecutionError("unsupported_audio_format", "Audio inspection only accepts PCM16 WAV files", {}, {}, {}, "/path");
+    try {
+        WavFileSource source(path, 1, 1024);
+        const auto& format = source.format();
+        const auto frames = source.total_frames();
+        return {{"path", path_to_utf8(path.lexically_relative(policy.workspace))}, {"sample_rate", format.sample_rate},
+                {"channels", format.channel_count}, {"frame_count", frames},
+                {"duration_seconds", static_cast<double>(frames) / static_cast<double>(format.sample_rate)},
+                {"encoding", "pcm_s16le"}};
+    } catch (const ExecutionError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw ExecutionError("audio_inspect_failed", error.what(), {}, {}, {}, "/path");
+    }
+}
+
 } // namespace
 
 void validate_control_paths(const GraphDefinition& graph, const ControlPolicy& policy) {
     // canonical/weakly_canonical 会解析已存在的链接；逐组件比较避免 root 与 root-other 前缀混淆。
     // 不把原始字符串的大小写/前缀当权限依据，无法解析的路径一律拒绝。
     // 根目录在宿主启动时已 canonical；不要在每次请求重新解析根、意外扩大授权范围。
-    const auto& root = policy.workspace;
-    if (!root.is_absolute()) throw ExecutionError("invalid_workspace", "Host workspace must be canonical and absolute");
+    if (!policy.workspace.is_absolute()) throw ExecutionError("invalid_workspace", "Host workspace must be canonical and absolute");
     for (const auto& node : graph.nodes) {
         for (const auto& [id, value] : node.parameters) {
             const auto* path = std::get_if<std::filesystem::path>(&value);
             if (!path) continue;
-            std::error_code error;
-            const auto resolved = std::filesystem::weakly_canonical(*path, error);
-            bool inside = !error && resolved.is_absolute();
-            auto target_part = resolved.begin();
-            for (auto root_part = root.begin(); inside && root_part != root.end(); ++root_part) {
-                if (target_part == resolved.end() || *root_part != *target_part) { inside = false; break; }
-                ++target_part;
+            try { (void)resolve_control_path(*path, policy); }
+            catch (const ExecutionError& error) {
+                throw ExecutionError(error.code, "File parameter escapes the host workspace or cannot be resolved", node.id, {}, id);
             }
-            if (!inside) throw ExecutionError("path_not_allowed", "File parameter escapes the host workspace or cannot be resolved", node.id, {}, id);
         }
     }
 }
@@ -165,7 +209,7 @@ std::string ControlProtocol::handle(std::string_view input) {
             fields(request, {"schema_version", "id", "op"});
             data = Json::parse(node_catalog_json(registry_));
             if (operation == "capabilities") {
-                data["operations"] = {"capabilities", "nodes.list", "nodes.describe", "devices.list", "graph.validate",
+                data["operations"] = {"capabilities", "nodes.list", "nodes.describe", "devices.list", "audio.inspect", "graph.validate",
                                       "tasks.start", "tasks.status", "tasks.cancel", "tasks.result", "tasks.release"};
                 data["modes"] = {"offline", "streaming", "realtime"};
                 data["policy"] = {{"workspace", path_to_utf8(policy_.workspace)}, {"allow_devices", policy_.allow_devices},
@@ -178,6 +222,8 @@ std::string ControlProtocol::handle(std::string_view input) {
                 data["limits"] = {{"active_tasks", 1}, {"retained_tasks", 16}, {"request_bytes", maximum_request_bytes},
                                    {"result_bytes", maximum_request_bytes}, {"request_depth", 64}};
             }
+        } else if (operation == "audio.inspect") {
+            data = inspect_audio(request, policy_);
         } else if (operation == "nodes.describe") {
             fields(request, {"schema_version", "id", "op", "type"});
             data = Json::parse(node_description_json(registry_.descriptor(text_field(request, "type"))));

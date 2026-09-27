@@ -13,6 +13,9 @@ const client = {
         return request.type === "missing"
           ? { ...base, success: false, errors: [{ code: "unknown_node_type", message: "missing" }] }
           : { ...base, data: { node: { type: request.type } } };
+      case "audio.inspect":
+        return { ...base, data: { echoed: request.op, path: request.path, sample_rate: 44_100,
+          channels: 2, frame_count: 4410, duration_seconds: 0.1, encoding: "pcm_s16le" } };
       case "graph.validate":
         return { ...base, data: { valid: true, received_graph: request.graph } };
       case "tasks.start":

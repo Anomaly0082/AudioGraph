@@ -89,6 +89,7 @@ Json descriptor_json(const NodeDescriptor& node) {
         if (parameter.maximum) item["maximum"] = *parameter.maximum;
         if (!parameter.unit.empty()) item["unit"] = parameter.unit;
         if (!parameter.enum_values.empty()) item["enum"] = parameter.enum_values;
+        if (parameter.integer_only) item["integer_only"] = true;
         parameters.push_back(std::move(item));
     }
     const char* domain = "unsupported";

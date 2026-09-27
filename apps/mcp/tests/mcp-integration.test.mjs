@@ -19,6 +19,7 @@ const expectedTools = [
   "audio_capabilities",
   "audio_list_nodes",
   "audio_describe_node",
+  "audio_inspect",
   "audio_validate_graph",
   "audio_start_task",
   "audio_task_status",
@@ -61,6 +62,16 @@ test("SDK initialize and tools/list expose only the offline/streaming surface", 
   const realtimeDescription = envelope(realtimeDescriptionResult);
   assert.equal(realtimeDescriptionResult.isError, true);
   assert.ok(realtimeDescription.errors.some(error => error.code === "node_not_exposed"));
+
+  await writeFile(path.join(workspace.directory, "inspect.wav"), pcm16Wav(4410, 0.25, 44_100, 2));
+  const inspectedResult = await call(connection.client, "audio_inspect", { path: "inspect.wav" });
+  const inspected = envelope(inspectedResult);
+  assert.equal(inspectedResult.isError, undefined);
+  assert.equal(inspected.data.sample_rate, 44_100);
+  assert.equal(inspected.data.channels, 2);
+  assert.equal(inspected.data.frame_count, 4410);
+  assert.equal(inspected.data.encoding, "pcm_s16le");
+  assert.equal("samples" in inspected.data, false, "inspection must not load or return audio samples");
 
   const unknownField = await connection.client.callTool({ name: "audio_capabilities", arguments: { ignored: true } });
   assert.equal(unknownField.isError, true, "unknown MCP input fields must not be silently stripped");

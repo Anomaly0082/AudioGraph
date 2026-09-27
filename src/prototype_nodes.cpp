@@ -1,6 +1,8 @@
 #include "audioprocess/prototype_nodes.h"
 
 #include "audioprocess/audio_buffer.h"
+#include "audioprocess/denoise_node.h"
+#include "audioprocess/format_nodes.h"
 #include "audioprocess/wav_file.h"
 #include "audioprocess/detail/exclusive_file.h"
 #include "audioprocess/execution_error.h"
@@ -337,6 +339,8 @@ NodeRegistry create_prototype_node_registry() {
     registry.register_type(TextOutputNode::make_descriptor(), [](const ParameterMap& parameters) {
         return std::make_unique<TextOutputNode>(parameters);
     });
+    register_denoise_node_type(registry);
+    register_format_node_types(registry);
     register_streaming_node_types(registry);
     return registry;
 }

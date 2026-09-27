@@ -21,7 +21,7 @@ type Device = { id: string; name: string; is_default: boolean };
 type TaskView = { id: string; sessionId: string; state: TaskState | "unknown"; errors?: unknown[]; result?: unknown };
 const modeLabels: Record<Mode, string> = { offline: "整段离线", streaming: "分块离线", realtime: "实时设备" };
 const stateLabels: Record<string, string> = { queued: "已排队", running: "运行中", cancelling: "正在取消", succeeded: "已完成", failed: "执行失败", cancelled: "已取消", unknown: "状态未知" };
-const templateLabels: Record<TemplateKind, string> = { text: "文本 · 无文件输出", wav: "WAV → Gain → WAV", stream: "分块 WAV → Gain → WAV", realtime: "实时输入 → Gain → 输出" };
+const templateLabels: Record<TemplateKind, string> = { text: "文本 · 无文件输出", wav: "WAV → Gain → WAV", denoise: "语音降噪 · 含48 kHz单声道转换", stream: "分块 WAV → Gain → WAV", realtime: "实时输入 → Gain → 输出" };
 const initialGraph = JSON.stringify(createTemplate("text").graph, null, 2);
 function requireSuccess(reply: Reply): Record<string, any> {
   if (!reply.success) throw new Error(formatError(reply.errors ?? reply));

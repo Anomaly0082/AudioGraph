@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 
@@ -190,7 +191,7 @@ test("error rendering retains the actionable backend code and location", () => {
 });
 
 test("templates are valid independent documents and default text has no file side effect", () => {
-  for (const kind of ["text", "wav", "stream", "realtime"]) {
+  for (const kind of ["text", "wav", "denoise", "stream", "realtime"]) {
     const template = createTemplate(kind);
     assert.deepEqual(parseGraph(JSON.stringify(template.graph)), template.graph);
     assert.ok(["offline", "streaming", "realtime"].includes(template.mode));
@@ -204,4 +205,22 @@ test("templates are valid independent documents and default text has no file sid
   assert.equal(live.mode, "realtime");
   assert.equal(live.graph.nodes.filter((node) => node.type === "realtime_input").length, 1);
   assert.equal(live.graph.nodes.filter((node) => node.type === "realtime_output").length, 1);
+});
+
+test("denoise template matches the checked-in offline example without unsupported controls", () => {
+  const template = createTemplate("denoise");
+  const example = JSON.parse(readFileSync(
+    new URL("../../../examples/graphs/denoise.json", import.meta.url), "utf8"));
+  assert.equal(template.mode, "offline");
+  assert.deepEqual(template.graph, example);
+  assert.deepEqual(buildTaskOptions(template.mode, options), {});
+  const denoise = template.graph.nodes.find((node) => node.type === "rnnoise_denoise");
+  assert.ok(denoise, "denoise template must contain rnnoise_denoise");
+  assert.equal(Object.hasOwn(denoise, "parameters"), false,
+    "rnnoise_denoise has no supported adjustable parameters");
+  assert.equal(template.graph.nodes.filter((node) => node.type === "audio_downmix_mono").length, 1,
+    "denoise template must adapt stereo input to mono");
+  const resample = template.graph.nodes.find((node) => node.type === "audio_resample");
+  assert.equal(resample?.parameters?.sample_rate, 48_000,
+    "denoise template must adapt arbitrary supported rates to RNNoise 48 kHz");
 });

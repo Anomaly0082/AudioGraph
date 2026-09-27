@@ -15,16 +15,33 @@ async fn backend_read(backend: Arc<BackendManager>, session_id: String, request:
 }
 
 pub(crate) async fn generate_impl(ai: Arc<AiManager>, backend: Arc<BackendManager>,
-    session_id: String, request_id: String, config: AiConfig, prompt: String) -> Result<AiReply, String> {
+    session_id: String, request_id: String, config: AiConfig, prompt: String,
+    input_path: Option<String>) -> Result<AiReply, String> {
     let result_id = request_id.clone();
     ai.run(request_id, async move {
         crate::ai::endpoint_url(&config)?;
         current_session(&backend, &session_id)?;
+        let inspection = match input_path.map(|path| path.trim().to_owned()).filter(|path| !path.is_empty()) {
+            Some(path) => {
+                let envelope = backend_read(backend.clone(), session_id.clone(), json!({
+                    "op":"audio.inspect", "path":path
+                })).await?;
+                if envelope.get("success") != Some(&Value::Bool(true)) {
+                    let details = envelope.get("errors").map(Value::to_string).unwrap_or_default();
+                    return Err(format!("输入音频检查失败，未发送模型请求。{}",
+                        details.chars().take(2048).collect::<String>()));
+                }
+                Some(envelope.get("data").cloned().ok_or("输入音频检查响应缺少data")?)
+            }
+            None => None,
+        };
         let catalog = backend_read(backend.clone(), session_id.clone(), json!({"op":"nodes.list"})).await?;
         let nodes = crate::ai::catalog_nodes(&catalog)?;
-        let body = crate::ai::build_generate_body(&config.model, &prompt, &nodes)?;
+        let body = crate::ai::build_generate_body(&config.model, &prompt, &nodes, inspection.as_ref())?;
+        current_session(&backend, &session_id)?;
         let response = crate::ai::request_completion(&config, body).await?;
-        let reply = crate::ai::parse_generation(response, result_id, &nodes)?;
+        let mut reply = crate::ai::parse_generation(response, result_id, &nodes)?;
+        reply.inspection = inspection;
         if let Some(proposal) = &reply.proposal {
             let validation = backend_read(backend.clone(), session_id.clone(), json!({
                 "op":"graph.validate", "mode":proposal.mode, "graph":proposal.graph, "options":proposal.options
@@ -56,8 +73,9 @@ pub(crate) async fn summarize_impl(ai: Arc<AiManager>, backend: Arc<BackendManag
 
 #[tauri::command]
 pub async fn ai_generate(ai: tauri::State<'_, Arc<AiManager>>, backend: tauri::State<'_, Arc<BackendManager>>,
-    session_id: String, request_id: String, config: AiConfig, prompt: String) -> Result<AiReply, String> {
-    generate_impl(ai.inner().clone(), backend.inner().clone(), session_id, request_id, config, prompt).await
+    session_id: String, request_id: String, config: AiConfig, prompt: String,
+    input_path: Option<String>) -> Result<AiReply, String> {
+    generate_impl(ai.inner().clone(), backend.inner().clone(), session_id, request_id, config, prompt, input_path).await
 }
 
 #[tauri::command]

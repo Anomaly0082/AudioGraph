@@ -1,10 +1,12 @@
 # 最小桌面控制台
 
-桌面用 Tauri/React 操作已有受控任务接口。C++ 仍负责 Graph 校验、Node 和 Executor，Rust 管理固定的 control-cli 子进程、请求/响应和有限的配置文件读写。P8 增加了 [内置 AI Graph 助手](embedded-ai.md)，通过 Rust 请求模型提案，再复用同一任务接口；没有拖拽节点编辑器，也没有新增 DSP 或 Workflow。
+桌面用 Tauri/React 操作已有受控任务接口。C++ 仍负责 Graph 校验、Node 和 Executor，Rust 管理固定的 control-cli 子进程、请求/响应和有限的配置文件读写。P8增加了 [内置AI助手](embedded-ai.md)，P9/P10在C++侧增加降噪和格式适配；前端复用同一任务接口，不实现DSP。仍无拖拽节点编辑器或Workflow。
 
 ## 构建
 
 在 VS2022 Developer PowerShell 的仓库根目录：
+
+第一次克隆需先按 [RNNoise模型准备说明](../third_party/rnnoise/README.integration.md) 显式准备本地权重；当前工作目录已准备，日常构建不需要再次联网。
 
 ```powershell
 cmake --preset windows-msvc
@@ -28,7 +30,7 @@ npm run tauri -- dev
 4. 校验，再运行；任务区域显示 ID、状态、结果或结构化错误。运行中可取消。
 5. 终态记录释放后可以再次执行。断开或关闭窗口会结束自己创建的后台连接，任务不会转为独立后台服务。
 
-本阶段不自动持久化未保存的草稿和连接设置；关闭窗口前请将需要保留的 Graph 另存为文件。已完成结果对应提交时的 Graph 快照，之后编辑不会重新计算结果。
+未保存的Graph草稿和后端连接设置不自动持久化；关闭窗口前请将需要保留的Graph另存。AI的API地址、模型和Key可独立保存到本机明文JSON并在启动恢复，详见 [配置说明](embedded-ai.md)。已完成结果对应提交时的Graph快照，之后编辑不会重新计算结果。
 
 模板只是起点，连接关系由 JSON 决定，不根据节点数组的显示顺序执行。模式/图/选项改变后，之前的校验标记不再有效，真正启动时 C++ 仍重新校验。坏 JSON 或载入失败不会用空内容替换编辑器。
 
@@ -59,7 +61,7 @@ npm run tauri -- dev
 - `apps/control_cli/`、`src/control_protocol.cpp`、`src/task_service.cpp`：C++ 控制协议和任务服务。
 - Node/Graph/Executor 仍位于仓库 include/audioprocess 与 src 中，与前端框架无关。
 
-更多任务状态与权限细节见 [受控任务接口](control-api.md)，实时限制见 [实时 Graph](realtime-audio.md)。本阶段只把已有能力呈现在界面，不代表 ASR、变声、降噪或任意实时图已经可用。
+更多任务状态与权限细节见 [受控任务接口](control-api.md)，实时限制见 [实时 Graph](realtime-audio.md)。降噪模板现为「语音降噪 · 含48 kHz单声道转换」，P10增加显式格式转换和AI输入音频信息预检，使用现有JSON编辑/校验/运行流程。请按 [手动验收步骤](audio-format.md) 验证自己的录音。ASR、AI变声和任意实时图仍未实现。
 
 Tauri 的 sidecar 打包约定参见[官方文档](https://v2.tauri.app/zh-cn/develop/sidecar/)。
 

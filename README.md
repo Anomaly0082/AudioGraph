@@ -5,6 +5,8 @@
 ## 已实现
 
 - 已注册节点：wav_input、gain、peak_meter、wav_output、text_input、text_output。
+- 离线语音降噪：rnnoise_denoise 封装固定 RNNoise 默认模型，48 kHz 单声道 Audio → Audio；本地 CPU，无需模型 API，保持帧数。使用方法见 [降噪说明](docs/denoise.md)。
+- 离线格式适配：audio_downmix_mono 将双声道平均转单声道，audio_resample 复用 miniaudio 重采样；支持8–192 kHz单/双声道。audio.inspect 查询工作区WAV格式，内置AI可先获取真实元数据再生成提案。见 [格式适配与手动验收](docs/audio-format.md)。
 - 正式流式节点：wav_stream_input、stream_gain、wav_stream_output。相同 Graph JSON 结构，独立 AudioStream 端口和流式工厂。
 - Graph JSON v1：节点、参数、连接、exports；相对路径基于配置文件目录。
 - 参数描述：类型、必填、默认值、范围、单位和文本枚举。
@@ -21,7 +23,7 @@
 
 ## 构建与测试
 
-使用 VS2022 Developer PowerShell，已固定 JSON 和 miniaudio 依赖源码，C++ 构建无需下载依赖。
+使用 VS2022 Developer PowerShell。JSON、miniaudio和RNNoise代码已固定；RNNoise权重因许可待上游澄清，不随源码提交。第一次克隆需阅读 [模型准备说明](third_party/rnnoise/README.integration.md)，显式准备本地模型；本工作目录已准备。准备后C++构建不联网。
 
 ```powershell
 cmake --preset windows-msvc
@@ -110,7 +112,7 @@ third_party/           固定版本 nlohmann/json、miniaudio 和许可证
 
 桌面已从旧固定 Gain 演示切换到 control-cli 任务接口。先选择工作目录并连接，再编辑/载入 Graph JSON、校验和执行；默认文本模板不访问文件或设备。节点能力、参数、任务状态、取消和结构化结果在界面查看。实时设备需明确授权，默认静音。使用流程及限制见 [桌面说明](docs/desktop.md)。
 
-也可使用新增的 AI Graph 助手，用自然语言提出文件处理需求。需要支持 Chat Completions 工具调用的模型服务；地址和模型可自填，Key 不落盘。操作步骤、数据发送范围及兼容限制见 [内置 AI 说明](docs/embedded-ai.md)。
+也可使用 AI Graph 助手，用自然语言提出文件处理需求。需要支持 Chat Completions 工具调用的模型服务；地址、模型和Key可保存到本机用户配置目录的明文JSON，启动自动恢复，不进入仓库。操作步骤、数据发送范围及兼容限制见 [内置 AI 说明](docs/embedded-ai.md)。
 
 ```powershell
 cmake --build --preset debug --target control-cli
@@ -125,7 +127,7 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 ## 当前边界
 
 - SyncGraphExecutor 的 Audio 是完整 AudioClip；长录音可能占用较多内存。StreamingGraphExecutor 的 AudioStream 使用借用块，不缓存完整录音；格式转换接口已预留，但没有重采样算法。
-- 文件编解码仅 PCM16 WAV；离线 Graph 未实现采样率转换。实时会话由 miniaudio 适配设备格式，但不等于 Graph 已有转换节点。未实现 MP3/FLAC、ASR、TTS、GPU 或云端服务。
+- 文件编解码仅 PCM16 WAV；离线 Graph 已有显式重采样/转单声道节点（8–192 kHz，单/双声道），不支持其他布局或高保真sinc。RNNoise降噪本体限48 kHz单声道整段语音，未接实时设备。未实现 MP3/FLAC、ASR、TTS、GPU 或云端音频节点。
 - 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图或运行中调参；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
 - 正式分块执行仍是同步离线，不支持流式分支、混合整段/流式图或异步任务。M0 旁路工具保留，正式流式 Graph 不通过它调度。
 - 已有受控任务协议、最小 Tauri 控制台、离线 MCP 适配和内置 AI 提案入口；外接客户端仍需配置 MCP，内置入口直接配置模型 API。尚无 Workflow 和参数搜索，AI 不能执行任意 Python。

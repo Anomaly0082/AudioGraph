@@ -8,11 +8,13 @@ const {
   createAiRequestId,
   getFileParameters,
   isCurrentAiResponse,
+  loadedAiDraft,
   mergeSummaryError,
   normalizeAiConfig,
   normalizeAiProposal,
   normalizeBaseUrl,
   runApprovedProposal,
+  sameAiConfig,
   shouldCancelAiRequest,
 } = require("../../../build/desktop-model-tests/ai-model.js");
 
@@ -59,6 +61,19 @@ test("AI config trims public fields but preserves the in-memory key exactly", ()
   assert.throws(() => normalizeAiConfig({ baseUrl: "https://models.example/v1", model: "  ", apiKey: key }));
   assert.equal(JSON.stringify({ ...normalized, apiKey: undefined }).includes("dummy-key"), false,
     "callers can omit the key from serializable display state");
+});
+
+test("loaded settings preserve edits made during the asynchronous read", () => {
+  const draft = { baseUrl: "https://new.example/v1", model: "draft", apiKey: "draft-key" };
+  const saved = { baseUrl: "https://old.example/v1", model: "saved", apiKey: "saved-key" };
+  assert.deepEqual(loadedAiDraft(draft, saved, true), draft);
+  assert.deepEqual(loadedAiDraft(draft, saved, false), saved);
+  assert.deepEqual(loadedAiDraft(draft, null, false), draft);
+  assert.equal(sameAiConfig(draft, saved), false);
+  assert.equal(sameAiConfig(draft, { ...draft }), true);
+  assert.equal(sameAiConfig(draft, { ...draft, apiKey: "" }), false,
+    "clearing the current key must mark a saved key as modified");
+  assert.equal(sameAiConfig(draft, null), false);
 });
 
 test("offline and streaming tool proposals normalize to task.start shaped values", () => {

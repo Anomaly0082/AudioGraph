@@ -86,10 +86,14 @@ std::int16_t float_to_pcm16(float sample) noexcept {
 
 WavFileSource::WavFileSource(
     const std::filesystem::path& path,
-    std::uint32_t maximum_block_frames)
+    std::uint32_t maximum_block_frames,
+    std::optional<std::size_t> maximum_header_chunks)
     : maximum_block_frames_(maximum_block_frames) {
     if (maximum_block_frames == 0) {
         throw std::invalid_argument("WAV source block size must be positive");
+    }
+    if (maximum_header_chunks == 0) {
+        throw std::invalid_argument("WAV header chunk limit must be positive");
     }
     if (path.empty() || path.native().find(std::filesystem::path::value_type{}) !=
                             std::filesystem::path::string_type::npos) {
@@ -117,10 +121,15 @@ WavFileSource::WavFileSource(
 
     bool found_format = false;
     bool found_data = false;
+    std::size_t header_chunks = 0;
 
     while (stream_ && !(found_format && found_data)) {
         const auto position = static_cast<std::uint64_t>(stream_.tellg());
         if (position == riff_end) { break; }
+        if (maximum_header_chunks && header_chunks >= *maximum_header_chunks) {
+            throw std::runtime_error("WAV header contains too many chunks");
+        }
+        ++header_chunks;
         if (position > riff_end || riff_end - position < 8U) {
             throw std::runtime_error("Incomplete WAV chunk header within RIFF container");
         }

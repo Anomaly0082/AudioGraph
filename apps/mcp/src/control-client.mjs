@@ -7,7 +7,7 @@ const RESPONSE_BYTES = 8 * 1024 * 1024;
 const STDERR_BYTES = 16 * 1024;
 const MAX_PENDING = 8;
 const OPERATIONS = new Set([
-  'capabilities', 'nodes.list', 'nodes.describe', 'graph.validate',
+  'capabilities', 'nodes.list', 'nodes.describe', 'audio.inspect', 'graph.validate',
   'tasks.start', 'tasks.status', 'tasks.cancel', 'tasks.result', 'tasks.release',
 ]);
 

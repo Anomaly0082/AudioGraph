@@ -2,6 +2,8 @@ import { buildTaskOptions, formatError, parseGraph, type GraphDocument, type Mod
 
 export type AiMode = Exclude<Mode, "realtime">;
 export type AiConfig = { baseUrl: string; model: string; apiKey: string };
+export type AiSettingsLoad = { path: string; config: AiConfig | null };
+export type AiSettingsWrite = { path: string };
 export type AiProposal = {
   mode: AiMode;
   graph: GraphDocument;
@@ -11,7 +13,16 @@ export type AiGenerateResponse = {
   requestId: string;
   text: string;
   proposal?: unknown;
+  inspection?: AudioInspection;
   usage?: unknown;
+};
+export type AudioInspection = {
+  path: string;
+  sample_rate: number;
+  channels: number;
+  frame_count: number;
+  duration_seconds: number;
+  encoding: "pcm_s16le";
 };
 export type AiSummaryResponse = { requestId: string; text: string; usage?: unknown };
 export type AiTaskSnapshot = {
@@ -53,6 +64,15 @@ export function normalizeAiConfig(config: AiConfig): AiConfig {
   const model = config.model.trim();
   if (!model) throw new Error("请填写模型名称。");
   return { baseUrl: normalizeBaseUrl(config.baseUrl), model, apiKey: config.apiKey };
+}
+
+export function sameAiConfig(left: AiConfig, right: AiConfig | null): boolean {
+  return right !== null && left.baseUrl === right.baseUrl && left.model === right.model &&
+    left.apiKey === right.apiKey;
+}
+
+export function loadedAiDraft(current: AiConfig, loaded: AiConfig | null, editedWhileLoading: boolean): AiConfig {
+  return editedWhileLoading || loaded === null ? current : loaded;
 }
 
 export function canRunAiProposal(value: unknown): boolean {

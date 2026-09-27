@@ -30,6 +30,9 @@ void validate_parameter_value(const ParameterDescriptor& descriptor, const Param
     }
     if (const auto* number = std::get_if<double>(&value)) {
         if (!std::isfinite(*number)) fail("invalid_parameter", "Parameter must be finite");
+        if (descriptor.integer_only && std::floor(*number) != *number) {
+            fail("invalid_parameter", "Parameter must be an integer");
+        }
         if ((descriptor.minimum && *number < *descriptor.minimum) ||
             (descriptor.maximum && *number > *descriptor.maximum)) {
             fail("parameter_out_of_range", "Parameter is outside the permitted range");
@@ -92,6 +95,9 @@ void validate_descriptor(const NodeDescriptor& descriptor) {
         }
         if ((parameter.minimum || parameter.maximum) && parameter.type != ParameterType::Number) {
             throw ExecutionError("invalid_descriptor", "Numeric bounds require a Number parameter", {}, {}, parameter.id);
+        }
+        if (parameter.integer_only && parameter.type != ParameterType::Number) {
+            throw ExecutionError("invalid_descriptor", "Integer constraint requires a Number parameter", {}, {}, parameter.id);
         }
         if ((parameter.minimum && !std::isfinite(*parameter.minimum)) ||
             (parameter.maximum && !std::isfinite(*parameter.maximum)) ||

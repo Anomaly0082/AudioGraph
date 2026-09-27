@@ -63,6 +63,8 @@ test("local validation rejects unsafe operations without invalidating the connec
   });
   await assert.rejects(harness.client.request({ op: "shell", command: "anything" }), /Unsupported operation/);
   assert.equal(harness.client.closed, false);
+  assert.equal((await harness.client.request({ op: "audio.inspect", path: "selected.wav" })).data.echoed,
+    "audio.inspect", "the bounded read-only inspection operation must pass the client allowlist");
   assert.equal((await harness.client.request({ op: "nodes.list" })).success, true);
 });
 

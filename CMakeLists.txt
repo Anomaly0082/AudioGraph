@@ -11,11 +11,31 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_subdirectory(third_party/rnnoise)
+
+# One fixed miniaudio implementation provides both portable DSP and Windows devices.
+add_library(miniaudio STATIC src/miniaudio_impl.c)
+target_include_directories(miniaudio SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+target_compile_definitions(miniaudio PUBLIC MA_NO_DECODING MA_NO_ENCODING
+    MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH MA_NO_ENGINE)
+if(WIN32)
+    target_compile_definitions(miniaudio PUBLIC MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_WASAPI)
+    target_link_libraries(miniaudio PRIVATE ole32)
+else()
+    target_compile_definitions(miniaudio PUBLIC MA_NO_DEVICE_IO MA_NO_THREADING)
+    target_link_libraries(miniaudio PRIVATE m)
+endif()
+if(MSVC)
+    target_compile_options(miniaudio PRIVATE /W0)
+endif()
+
 add_library(audio_core STATIC
     src/graph_validator.cpp
     src/node.cpp
     src/processing_chain.cpp
     src/prototype_nodes.cpp
+    src/denoise_node.cpp
+    src/format_nodes.cpp
     src/sync_graph_executor.cpp
     src/streaming_graph_executor.cpp
     src/streaming_nodes.cpp
@@ -31,6 +51,7 @@ target_include_directories(audio_core
 )
 
 target_compile_features(audio_core PUBLIC cxx_std_20)
+target_link_libraries(audio_core PRIVATE rnnoise miniaudio)
 
 # JSON 仅用于配置/协议边界，核心节点接口保持无第三方 JSON 类型。
 add_library(nlohmann_json INTERFACE)
@@ -43,16 +64,7 @@ add_library(audio_realtime_config STATIC src/realtime_config.cpp)
 target_link_libraries(audio_realtime_config PUBLIC audio_core PRIVATE nlohmann_json::nlohmann_json)
 
 if(WIN32)
-    # 裁剪到 WASAPI 设备API；PUBLIC保证设备结构在C/C++两端的布局一致。
-    add_library(miniaudio STATIC src/miniaudio_impl.c)
-    target_include_directories(miniaudio SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-    target_compile_definitions(miniaudio PUBLIC
-        MA_ENABLE_ONLY_SPECIFIC_BACKENDS MA_ENABLE_WASAPI MA_NO_DECODING MA_NO_ENCODING
-        MA_NO_RESOURCE_MANAGER MA_NO_NODE_GRAPH MA_NO_ENGINE)
-    if(MSVC)
-        target_compile_options(miniaudio PRIVATE /W0)
-    endif()
-    target_link_libraries(miniaudio PRIVATE ole32)
+    # PUBLIC miniaudio definitions keep device structures consistent across C/C++.
     add_library(audio_device_session STATIC src/realtime_session.cpp)
     target_link_libraries(audio_device_session PUBLIC audio_core PRIVATE miniaudio)
     add_executable(realtime-cli apps/realtime_cli/main.cpp)
@@ -130,6 +142,26 @@ endif()
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(format-nodes-tests tests/format_nodes_tests.cpp)
+    target_link_libraries(format-nodes-tests PRIVATE audio_core miniaudio)
+    if(MSVC)
+        target_compile_options(format-nodes-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    else()
+        target_compile_options(format-nodes-tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME format-nodes-tests COMMAND format-nodes-tests)
+    set_tests_properties(format-nodes-tests PROPERTIES TIMEOUT 60)
+
+    add_executable(denoise-node-tests tests/denoise_node_tests.cpp)
+    target_link_libraries(denoise-node-tests PRIVATE audio_core rnnoise)
+    if(MSVC)
+        target_compile_options(denoise-node-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    else()
+        target_compile_options(denoise-node-tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME denoise-node-tests COMMAND denoise-node-tests)
+    set_tests_properties(denoise-node-tests PROPERTIES TIMEOUT 60)
+
     add_executable(audio-tests tests/audio_tests.cpp)
     target_link_libraries(audio-tests PRIVATE audio_core)
 

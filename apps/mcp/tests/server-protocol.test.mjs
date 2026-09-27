@@ -75,3 +75,14 @@ test("strict graph fields are located while parameter keys remain backend-owned"
   assert.deepEqual(validationEnvelope.data.received_graph, graph,
     "unknown parameter names and values must reach the authoritative backend unchanged");
 });
+
+test("audio_inspect forwards only an explicit path through the controlled operation", async t => {
+  const client = await openFixture(t);
+  const inspected = await call(client, "audio_inspect", { path: "selected.wav" });
+  assert.equal(inspected.isError, undefined);
+  assert.equal(envelope(inspected).data.echoed, "audio.inspect");
+  const missing = await client.callTool({ name: "audio_inspect", arguments: {} });
+  assert.equal(missing.isError, true);
+  const extra = await client.callTool({ name: "audio_inspect", arguments: { path: "selected.wav", prompt: "guess.wav" } });
+  assert.equal(extra.isError, true, "natural-language or extra path hints must not enter the inspect operation");
+});

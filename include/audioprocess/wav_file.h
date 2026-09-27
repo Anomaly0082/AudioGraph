@@ -19,7 +19,8 @@ namespace detail { class ExclusiveFile; }
 
 class WavFileSource {
 public:
-    WavFileSource(const std::filesystem::path& path, std::uint32_t maximum_block_frames);
+    WavFileSource(const std::filesystem::path& path, std::uint32_t maximum_block_frames,
+                  std::optional<std::size_t> maximum_header_chunks = std::nullopt);
 
     WavFileSource(const WavFileSource&) = delete;
     WavFileSource& operator=(const WavFileSource&) = delete;

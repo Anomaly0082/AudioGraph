@@ -5,6 +5,7 @@ mod backend;
 mod graph_files;
 mod ai;
 mod ai_commands;
+mod ai_settings;
 
 use std::sync::{Arc, atomic::Ordering};
 use tauri::Manager;
@@ -38,6 +39,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(backend::BackendManager::default()))
         .manage(Arc::new(ai::AiManager::default()))
+        .manage(Arc::new(ai_settings::SettingsStore::default()))
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::disconnect,
@@ -46,7 +48,10 @@ fn main() {
             commands::save_graph,
             ai_commands::ai_generate,
             ai_commands::ai_summarize,
-            ai_commands::ai_cancel_request
+            ai_commands::ai_cancel_request,
+            ai_settings::ai_load_settings,
+            ai_settings::ai_save_settings,
+            ai_settings::ai_clear_settings
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

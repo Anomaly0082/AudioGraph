@@ -17,3 +17,9 @@
 *.suo
 /examples/graphs/*.wav
 /examples/graphs/message.txt
+# RNNoise official pretrained weights: local dependency, license clarification pending.
+/third_party/rnnoise/src/rnnoise_data.c
+/third_party/rnnoise/src/rnnoise_data.h
+# Actual AI user settings live outside the repository; ignore accidental local copies too.
+ai-settings.json
+.ai-settings-*.tmp
