@@ -5,6 +5,9 @@ use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc};
 use std::thread;
 use std::time::Duration;
 
+#[path = "ai_repair_tests.rs"]
+mod repair_tests;
+
 fn config(base_url: String, key: &str) -> AiConfig {
     AiConfig { base_url, model: "mock-model".into(), api_key: key.into() }
 }

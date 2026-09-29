@@ -1,0 +1,94 @@
+.experiments-page > .panel > select {
+  width: 100%;
+}
+.experiment-create > label {
+  margin-top: 16px;
+}
+.experiment-parameters {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.experiment-parameter {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+.experiment-range {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+}
+.experiment-range label {
+  flex: 1;
+}
+.experiment-bindings {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.experiment-bindings small {
+  display: block;
+}
+.experiment-manual {
+  display: block;
+  width: 100%;
+  min-height: 95px;
+  margin: 8px 0 12px;
+  font-family: Consolas, monospace;
+}
+.experiment-proposals {
+  display: grid;
+  gap: 10px;
+  margin-top: 15px;
+}
+.experiment-candidates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 14px;
+}
+.experiment-candidate {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: #101a28;
+}
+.experiment-candidate dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.experiment-candidate dt {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.experiment-candidate dd {
+  margin: 0;
+}
+.experiment-output {
+  display: block;
+  margin-top: 10px;
+}
+.experiment-feedback {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 14px;
+}
+.experiment-feedback > button {
+  justify-self: start;
+}
+.experiment-candidate .section-heading {
+  align-items: start;
+}
+.experiment-candidate .action-row {
+  gap: 6px;
+}
+.experiment-candidate button {
+  font-size: 12px;
+}

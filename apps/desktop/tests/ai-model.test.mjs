@@ -4,7 +4,9 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const {
+  canReleaseFailedAiTask,
   canRunAiProposal,
+  compareProposalGraphs,
   createAiRequestId,
   getFileParameters,
   isCurrentAiResponse,
@@ -182,4 +184,27 @@ test("request identifiers are non-empty and do not collide in a short sequence",
   const values = Array.from({ length: 32 }, createAiRequestId);
   assert.equal(values.every((value) => typeof value === "string" && value.length > 0), true);
   assert.equal(new Set(values).size, values.length);
+});
+
+test("only the exact AI-owned failed task in the same session can be released for repair", () => {
+  const task = { id: "ai-task", sessionId: "session-a", state: "failed" };
+  assert.equal(canReleaseFailedAiTask(task, "ai-task", "session-a"), true);
+  assert.equal(canReleaseFailedAiTask(task, "another-task", "session-a"), false);
+  assert.equal(canReleaseFailedAiTask(task, "ai-task", "session-b"), false);
+  assert.equal(canReleaseFailedAiTask({ ...task, state: "succeeded" }, "ai-task", "session-a"), false);
+  assert.equal(canReleaseFailedAiTask({ ...task, state: "unknown" }, "ai-task", "session-a"), false);
+  assert.equal(canReleaseFailedAiTask({ ...task, state: "cancelled" }, "ai-task", "session-a"), false);
+  assert.equal(canReleaseFailedAiTask(null, "ai-task", "session-a"), false);
+});
+
+test("repair preview compares Graph, mode, and options from local values", () => {
+  const before = normalizeAiProposal({ mode: "offline", graph: textGraph() });
+  const nextGraph = textGraph();
+  nextGraph.nodes[0].parameters.text = "已修正";
+  const after = normalizeAiProposal({ mode: "streaming", graph: nextGraph, options: { block_frames: 64 } });
+  const changes = compareProposalGraphs(before, after);
+  assert.deepEqual(changes?.map((change) => change.path), [
+    "graph.nodes[0].parameters.text", "mode", "options.block_frames",
+  ]);
+  assert.equal(compareProposalGraphs({ graph: { nodes: "invalid" } }, after), null);
 });

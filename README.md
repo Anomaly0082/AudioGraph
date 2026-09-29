@@ -18,8 +18,9 @@
 - 实时 Graph：realtime_input、realtime_gain、realtime_output 注册到同一 Registry；控制线程准备线性计划，设备回调执行预分配处理器。有缓冲、时钟漂移补偿、静音探测和统计，不录音。
 - 受控任务入口：常驻 control-cli 通过 JSON Lines 查询能力、校验图、异步提交、查询状态、取消和读取结果；单活动任务，有宿主文件/设备权限限制。
 - 最小 MCP 适配：官方 SDK 的本地 stdio 服务，开放离线/分块任务工具；标准 MCP 客户端链路已测试，实际 AI 客户端仍需显式挂载配置。
-- 桌面控制台：Tauri/React 通过 Rust 常驻连接 control-cli，提供 Graph JSON 编辑、模板、校验、任务操作、结果和节点能力查看；不是拖拽节点编辑器。
+- 桌面工作台：Tauri/React 通过 Rust 常驻连接 control-cli，提供可视化节点/连线编辑、参数侧栏、Graph JSON、模板、校验、任务与结果。
 - 内置 AI Graph 助手：自填 OpenAI 兼容地址、模型和内存 Key，生成离线/分块提案，经本地校验和人工确认后执行，再解释真实结果；无需配置外部 MCP 客户端。
+- 最小参数对比：固定离线Graph与WAV副本，手填或AI提出2～4组参数，确认后串行运行、保存结果与人工评价，支持重启读取和恢复参数。见 [参数实验](docs/parameter-experiments.md)。
 
 ## 构建与测试
 
@@ -110,9 +111,9 @@ third_party/           固定版本 nlohmann/json、miniaudio 和许可证
 
 ## 桌面控制台
 
-桌面已从旧固定 Gain 演示切换到 control-cli 任务接口。先选择工作目录并连接，再编辑/载入 Graph JSON、校验和执行；默认文本模板不访问文件或设备。节点能力、参数、任务状态、取消和结构化结果在界面查看。实时设备需明确授权，默认静音。使用流程及限制见 [桌面说明](docs/desktop.md)。
+桌面使用control-cli任务接口，主导航为处理工作台、Graph编辑器、运行记录、设置。右上角是唯一工作区入口，在工作台选择输入并用AI或模板准备方案；编辑器可添加/删除节点、拖动位置、连接端口、修改参数和导出，保留JSON高级编辑。运行记录统一保存手动/AI Graph与Workflow的快照和结果，支持父子记录及文件指纹检查；旧参数实验已退出正式界面。实时设备需明确授权，默认静音。使用流程见 [桌面说明](docs/desktop.md)，记录边界见[运行记录](docs/run-records.md)。
 
-也可使用 AI Graph 助手，用自然语言提出文件处理需求。需要支持 Chat Completions 工具调用的模型服务；地址、模型和Key可保存到本机用户配置目录的明文JSON，启动自动恢复，不进入仓库。操作步骤、数据发送范围及兼容限制见 [内置 AI 说明](docs/embedded-ai.md)。
+也可使用 AI Graph 助手，用自然语言提出文件处理需求。可解析但校验失败的提案或本助手执行失败的任务，可以手动请求一次修正，再检查差异、重新确认执行。需要支持 Chat Completions 工具调用的模型服务；地址、模型和Key可保存到本机用户配置目录的明文JSON，启动自动恢复，不进入仓库。操作步骤、数据发送范围及兼容限制见 [内置 AI 说明](docs/embedded-ai.md)。
 
 ```powershell
 cmake --build --preset debug --target control-cli
@@ -126,10 +127,12 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 
 ## 当前边界
 
+- 统一工具助手：工作台现有入口内提供Graph/Workflow两种权限模式；双工作区文件工具、有限多轮调用和AI空间Graph运行已接入。支持受限[Workflow JSON程序](docs/workflow-v1.md)的校验与执行，见[工具与空间说明](docs/agent-tools.md)。
+
 - SyncGraphExecutor 的 Audio 是完整 AudioClip；长录音可能占用较多内存。StreamingGraphExecutor 的 AudioStream 使用借用块，不缓存完整录音；格式转换接口已预留，但没有重采样算法。
 - 文件编解码仅 PCM16 WAV；离线 Graph 已有显式重采样/转单声道节点（8–192 kHz，单/双声道），不支持其他布局或高保真sinc。RNNoise降噪本体限48 kHz单声道整段语音，未接实时设备。未实现 MP3/FLAC、ASR、TTS、GPU 或云端音频节点。
 - 实时图限线性、48 kHz 单声道、同格式同帧数处理器，不支持分支、变长输出、录音、热改图或运行中调参；设备拔插、真人试听及端到端延迟仍需人工验收，不承诺硬实时。
 - 正式分块执行仍是同步离线，不支持流式分支、混合整段/流式图或异步任务。M0 旁路工具保留，正式流式 Graph 不通过它调度。
-- 已有受控任务协议、最小 Tauri 控制台、离线 MCP 适配和内置 AI 提案入口；外接客户端仍需配置 MCP，内置入口直接配置模型 API。尚无 Workflow 和参数搜索，AI 不能执行任意 Python。
+- 已有受控任务协议、Tauri桌面、离线MCP适配和内置AI工具助手。已有受限离线参数实验及Workflow v1（变量、有限循环、条件和白名单工具调用）；尚无自动搜索/评分算法或长程恢复机制，AI不能执行任意Python。
 - 取消是协作请求，失败可能留下部分新文件，图不提供文件事务回滚。
 - 需求与设计目录为本地讨论材料，按用户要求不提交 Git。

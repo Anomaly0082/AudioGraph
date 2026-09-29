@@ -1,0 +1,133 @@
+.node-inspector {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.inspector-header,
+.inspector-export,
+.inspector-field-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 10px;
+}
+.inspector-header h2 {
+  margin-bottom: 4px;
+}
+.inspector-header button {
+  flex-shrink: 0;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+.inspector-type {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.inspector-section {
+  border-top: 1px solid var(--line);
+  margin-top: 17px;
+  padding-top: 15px;
+}
+.inspector-section h3 {
+  margin-bottom: 12px;
+}
+.inspector-field {
+  min-width: 0;
+  margin-top: 14px;
+}
+.inspector-field:first-of-type {
+  margin-top: 0;
+}
+.inspector-field-head label,
+.inspector-field > span {
+  font-size: 12px;
+  color: #d6e1f2;
+  overflow-wrap: anywhere;
+}
+.inspector-required {
+  color: #ffb5ae;
+}
+.inspector-field-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+}
+.inspector-field-edit input:not([type="checkbox"]),
+.inspector-field-edit select {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+.inspector-field-edit button {
+  flex-shrink: 0;
+  padding: 9px;
+  font-size: 11px;
+}
+.inspector-field-edit input[type="checkbox"] {
+  margin: 9px 0;
+}
+.inspector-description {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+.inspector-error {
+  display: block;
+  margin-top: 5px;
+  color: #ffb5ae;
+}
+.inspector-refresh {
+  font-size: 11px;
+  padding-top: 5px;
+  padding-bottom: 2px;
+}
+.inspector-clear {
+  font-size: 11px;
+  padding-top: 5px;
+  padding-bottom: 2px;
+}
+.inspector-missing {
+  display: block;
+  margin-top: 4px;
+}
+.inspector-readonly {
+  margin: 6px 0 0;
+  padding: 9px;
+  border: 1px solid #34435b;
+  border-radius: 5px;
+  background: #0d1624;
+  font-size: 11px;
+  overflow: auto;
+}
+.inspector-export {
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.inspector-export span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.inspector-export small {
+  display: block;
+}
+.inspector-export button {
+  padding: 5px 7px;
+  font-size: 11px;
+}
+.inspector-add-export {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+}
+.inspector-add-export label {
+  margin-top: 4px;
+}
+.inspector-add-export .inspector-field-edit {
+  margin-top: 0;
+}

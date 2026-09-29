@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "inputs": { "peak": 0.9, "threshold": 0.8 },
+  "steps": [
+    { "id": "limit", "type": "set", "value": { "$ref": "/inputs/threshold" } },
+    {
+      "id": "choice", "type": "if",
+      "condition": { "op": "gt", "left": { "$ref": "/inputs/peak" }, "right": { "$ref": "/steps/limit" } },
+      "then": [{ "id": "recommendation", "type": "set", "value": { "gain_db": -6 } }],
+      "else": [{ "id": "recommendation", "type": "set", "value": { "gain_db": 0 } }]
+    }
+  ],
+  "outputs": { "selected": { "$ref": "/steps/choice" } }
+}

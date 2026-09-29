@@ -1,0 +1,84 @@
+.agent-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+.agent-toolbar label {
+  min-width: 220px;
+}
+.agent-spaces dl {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.agent-spaces dt {
+  color: var(--muted);
+}
+.agent-spaces dd {
+  margin: 3px 0 12px;
+  overflow-wrap: anywhere;
+}
+.agent-conversation {
+  display: grid;
+  gap: 20px;
+  max-height: 560px;
+  overflow: auto;
+  margin: 20px 0;
+}
+.agent-turn {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.agent-user {
+  border-left: 2px solid #6d8cbb;
+  padding-left: 12px;
+}
+.agent-user p,
+.agent-answer > p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.8;
+}
+.agent-answer {
+  background: #111c2c;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 15px;
+}
+.agent-answer-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.agent-answer > small {
+  display: block;
+  margin-top: 10px;
+}
+.agent-graph-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.agent-event {
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+.agent-event pre {
+  max-height: 280px;
+  overflow: auto;
+  font-size: 11px;
+}
+.agent-prompt-label {
+  margin-top: 15px;
+}
+.agent-prompt-label textarea {
+  display: block;
+  width: 100%;
+  min-height: 95px;
+  margin-top: 6px;
+  resize: vertical;
+}

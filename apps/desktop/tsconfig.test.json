@@ -7,6 +7,15 @@
     "rootDir": "src",
     "outDir": "../../build/desktop-model-tests"
   },
-  "include": ["src/model.ts", "src/ai-model.ts"],
+  "include": [
+    "src/model.ts",
+    "src/ai-model.ts",
+    "src/workflow-model.ts",
+    "src/presentation.ts",
+    "src/experiment-model.ts",
+    "src/experiment-runner.ts",
+    "src/components/**/*.tsx",
+    "src/pages/**/*.tsx"
+  ],
   "references": []
 }

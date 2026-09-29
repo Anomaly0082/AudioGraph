@@ -1,0 +1,313 @@
+.visual-editor {
+  display: grid;
+  gap: 16px;
+}
+.visual-editor > .panel {
+  padding: 18px;
+}
+.graph-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 270px;
+  gap: 14px;
+  align-items: start;
+}
+.graph-sidebar {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+.inspector-fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.graph-sidebar .panel {
+  padding: 16px;
+}
+.graph-sidebar .section-heading {
+  margin-bottom: 12px;
+}
+.graph-sidebar .node-picker {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.graph-sidebar .node-picker button {
+  display: block;
+  width: 100%;
+  padding: 9px;
+}
+.graph-sidebar .node-picker button code {
+  display: block;
+  font-size: 10px;
+}
+.node-add-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.node-add-row > button {
+  flex: 1;
+}
+.node-add-row small {
+  flex-shrink: 0;
+}
+.graph-sidebar input {
+  width: 100%;
+}
+.graph-canvas {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #34445e;
+  border-radius: 9px;
+  background: #0c1421;
+}
+.canvas-toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2c3b53;
+  background: #162131;
+}
+.canvas-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.canvas-tools button {
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.canvas-viewport {
+  position: relative;
+  height: 510px;
+  /* No nested scroll container: wheel events scroll the surrounding page.
+     Camera movement is handled exclusively by the middle-button gesture. */
+  overflow: clip;
+  overscroll-behavior: auto;
+  touch-action: none;
+  background-image: radial-gradient(#29374a 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.canvas-viewport.panning,
+.canvas-viewport.panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+.canvas-viewport:focus-visible {
+  outline: 2px solid #9ab3ff;
+  outline-offset: -2px;
+}
+.canvas-surface {
+  position: relative;
+  transform-origin: top left;
+}
+.canvas-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.edge-line {
+  fill: none;
+  stroke: var(--wire-color, #a9bbd2);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.edge-shadow {
+  fill: none;
+  stroke: #0009;
+  stroke-width: 5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  cursor: pointer;
+  pointer-events: stroke;
+  vector-effect: non-scaling-stroke;
+}
+.canvas-edge:hover .edge-line {
+  stroke: #f4e6bd;
+}
+.canvas-edge.selected .edge-line,
+.canvas-edge:focus-within .edge-line {
+  stroke: #ffa950;
+  stroke-width: 3;
+}
+.edge-preview {
+  fill: none;
+  stroke: #ede5d3;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.edge-preview.valid {
+  stroke: #91dab3;
+}
+.edge-preview.invalid {
+  stroke: #ef8787;
+}
+.canvas-node {
+  position: absolute;
+  border: 1px solid #4a5e7d;
+  border-radius: 9px;
+  background: #152235;
+  box-shadow: 0 5px 12px #0005;
+}
+.canvas-node.selected {
+  border-color: #a8c0ff;
+  box-shadow: 0 0 0 2px #7694e644;
+}
+.canvas-node.unknown {
+  border-style: dashed;
+}
+.canvas-node-header {
+  display: block;
+  width: 100%;
+  height: 65px;
+  border: 0;
+  border-bottom: 1px solid #3b4b64;
+  border-radius: 8px 8px 0 0;
+  text-align: left;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  padding: 10px 13px;
+}
+.canvas-node-header:active {
+  cursor: grabbing;
+}
+.canvas-node-header strong,
+.canvas-node-header code {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.canvas-node-header strong {
+  font-size: 13px;
+}
+.canvas-node-header code {
+  margin-top: 4px;
+  font-size: 11px;
+}
+.canvas-ports {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.canvas-ports > div {
+  min-width: 0;
+}
+.canvas-port {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  height: 30px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 6px;
+  font-size: 10px;
+  touch-action: none;
+}
+.canvas-port span:not(.port-dot) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-port.output-port {
+  justify-content: flex-end;
+}
+.port-dot {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  background: #172030;
+  border: 2px solid var(--socket-color, #a9bbd2);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #070c14;
+}
+.canvas-port.connected .port-dot,
+.output-port .port-dot {
+  background: var(--socket-color, #a9bbd2);
+}
+.input-port .port-dot {
+  margin-left: -12px;
+}
+.output-port .port-dot {
+  margin-right: -12px;
+}
+.canvas-port.target-valid .port-dot {
+  box-shadow: 0 0 0 3px #77d3a799;
+}
+.canvas-port.target-invalid .port-dot {
+  box-shadow: 0 0 0 3px #ef8787aa;
+}
+.canvas-port.connecting .port-dot {
+  background: #f2c178;
+  border-color: #ffe2af;
+}
+.canvas-help {
+  min-height: 36px;
+  padding: 9px 12px;
+  font-size: 11px;
+  color: #9aaeca;
+  border-top: 1px solid #2c3b53;
+}
+.canvas-empty {
+  position: absolute;
+  top: 110px;
+  left: 60px;
+  color: #8da1bc;
+}
+.editor-json .code-editor {
+  margin-top: 10px;
+  min-height: 280px;
+  width: 100%;
+}
+.execution-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+}
+.execution-bar label {
+  min-width: 110px;
+}
+.execution-bar input[type="number"] {
+  width: 110px;
+}
+.execution-bar .action-row {
+  margin: 0 0 1px auto;
+}
+.editor-toolbar {
+  flex-wrap: wrap;
+}
+@media (max-width: 1000px) {
+  .graph-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .graph-sidebar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .canvas-viewport {
+    height: 420px;
+  }
+}
+@media (max-width: 640px) {
+  .graph-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .execution-bar .action-row {
+    margin-left: 0;
+  }
+}

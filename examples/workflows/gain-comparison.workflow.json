@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "inputs": {
+    "source": "input.wav",
+    "copy_path": "workflow-input.wav",
+    "candidates": [
+      { "gain_db": -12, "output": "workflow-gain-minus12.wav" },
+      { "gain_db": -6, "output": "workflow-gain-minus6.wav" },
+      { "gain_db": 0, "output": "workflow-gain-zero.wav" }
+    ]
+  },
+  "steps": [
+    {
+      "id": "import",
+      "type": "call",
+      "tool": "file_copy_to_ai",
+      "args": {
+        "source_space": "user",
+        "source_path": { "$ref": "/inputs/source" },
+        "path": { "$ref": "/inputs/copy_path" }
+      }
+    },
+    {
+      "id": "runs",
+      "type": "for_each",
+      "items": { "$ref": "/inputs/candidates" },
+      "steps": [
+        {
+          "id": "render",
+          "type": "call",
+          "tool": "graph_run",
+          "args": {
+            "mode": "offline",
+            "graph": {
+              "schema_version": 1,
+              "nodes": [
+                { "id": "input", "type": "wav_input", "parameters": { "path": { "$ref": "/steps/import/path" } } },
+                { "id": "gain", "type": "gain", "parameters": { "gain_db": { "$ref": "/item/gain_db" } } },
+                { "id": "meter", "type": "peak_meter" },
+                { "id": "output", "type": "wav_output", "parameters": { "path": { "$ref": "/item/output" } } }
+              ],
+              "connections": [
+                { "from": { "node": "input", "port": "audio" }, "to": { "node": "gain", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "meter", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "output", "port": "audio" } }
+              ],
+              "exports": [
+                { "name": "file", "node": "output", "port": "path" },
+                { "name": "peak", "node": "meter", "port": "peak" },
+                { "name": "clipped_samples", "node": "output", "port": "clipped_samples" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": { "input": { "$ref": "/steps/import/path" }, "runs": { "$ref": "/steps/runs" } },
+  "limits": { "max_steps": 16, "max_tool_calls": 8, "max_graph_runs": 3, "timeout_ms": 120000 }
+}

@@ -1,4 +1,4 @@
-use crate::ai::{AiConfig, AiManager, AiProposal, AiReply};
+use crate::ai::{AiConfig, AiManager, AiProposal, AiReply, AiRepairContext};
 use crate::backend::BackendManager;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
@@ -17,6 +17,19 @@ async fn backend_read(backend: Arc<BackendManager>, session_id: String, request:
 pub(crate) async fn generate_impl(ai: Arc<AiManager>, backend: Arc<BackendManager>,
     session_id: String, request_id: String, config: AiConfig, prompt: String,
     input_path: Option<String>) -> Result<AiReply, String> {
+    proposal_impl(ai, backend, session_id, request_id, config, prompt, input_path, None).await
+}
+
+pub(crate) async fn repair_impl(ai: Arc<AiManager>, backend: Arc<BackendManager>,
+    session_id: String, request_id: String, config: AiConfig, prompt: String,
+    input_path: Option<String>, context: AiRepairContext) -> Result<AiReply, String> {
+    crate::ai::validate_repair_context(&context)?;
+    proposal_impl(ai, backend, session_id, request_id, config, prompt, input_path, Some(context)).await
+}
+
+async fn proposal_impl(ai: Arc<AiManager>, backend: Arc<BackendManager>,
+    session_id: String, request_id: String, config: AiConfig, prompt: String,
+    input_path: Option<String>, repair: Option<AiRepairContext>) -> Result<AiReply, String> {
     let result_id = request_id.clone();
     ai.run(request_id, async move {
         crate::ai::endpoint_url(&config)?;
@@ -37,10 +50,13 @@ pub(crate) async fn generate_impl(ai: Arc<AiManager>, backend: Arc<BackendManage
         };
         let catalog = backend_read(backend.clone(), session_id.clone(), json!({"op":"nodes.list"})).await?;
         let nodes = crate::ai::catalog_nodes(&catalog)?;
-        let body = crate::ai::build_generate_body(&config.model, &prompt, &nodes, inspection.as_ref())?;
+        let body = match &repair {
+            Some(context) => crate::ai::build_repair_body(&config.model, &prompt, &nodes, inspection.as_ref(), context)?,
+            None => crate::ai::build_generate_body(&config.model, &prompt, &nodes, inspection.as_ref())?,
+        };
         current_session(&backend, &session_id)?;
         let response = crate::ai::request_completion(&config, body).await?;
-        let mut reply = crate::ai::parse_generation(response, result_id, &nodes)?;
+        let mut reply = crate::ai::parse_generation_with_repair(response, result_id, &nodes)?;
         reply.inspection = inspection;
         if let Some(proposal) = &reply.proposal {
             let validation = backend_read(backend.clone(), session_id.clone(), json!({
@@ -48,7 +64,14 @@ pub(crate) async fn generate_impl(ai: Arc<AiManager>, backend: Arc<BackendManage
             })).await?;
             if validation.get("success") != Some(&Value::Bool(true)) {
                 let details = validation.get("errors").map(Value::to_string).unwrap_or_default();
-                return Err(format!("AI提案未通过本地校验，没有执行任务。{}", details.chars().take(2048).collect::<String>()));
+                let context = AiRepairContext { proposal: proposal.clone(),
+                    errors: validation.get("errors").cloned().unwrap_or(json!([{
+                        "code":"validation_failed", "message":"本地校验失败"
+                    }])) };
+                crate::ai::validate_repair_context(&context)?;
+                reply.proposal = None;
+                reply.repair_context = Some(context);
+                reply.text = format!("AI提案未通过本地校验，没有执行任务。{}", details.chars().take(2048).collect::<String>());
             }
         }
         current_session(&backend, &session_id)?;
@@ -76,6 +99,13 @@ pub async fn ai_generate(ai: tauri::State<'_, Arc<AiManager>>, backend: tauri::S
     session_id: String, request_id: String, config: AiConfig, prompt: String,
     input_path: Option<String>) -> Result<AiReply, String> {
     generate_impl(ai.inner().clone(), backend.inner().clone(), session_id, request_id, config, prompt, input_path).await
+}
+
+#[tauri::command]
+pub async fn ai_repair(ai: tauri::State<'_, Arc<AiManager>>, backend: tauri::State<'_, Arc<BackendManager>>,
+    session_id: String, request_id: String, config: AiConfig, prompt: String,
+    input_path: Option<String>, context: AiRepairContext) -> Result<AiReply, String> {
+    repair_impl(ai.inner().clone(), backend.inner().clone(), session_id, request_id, config, prompt, input_path, context).await
 }
 
 #[tauri::command]
