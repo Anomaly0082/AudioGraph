@@ -7,6 +7,16 @@
 .agent-toolbar label {
   min-width: 220px;
 }
+.agent-toolbar .conversation-picker {
+  min-width: 0;
+  flex: 1 1 240px;
+  max-width: 440px;
+}
+.conversation-picker select {
+  width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
 .agent-spaces dl {
   font-size: 12px;
   line-height: 1.7;

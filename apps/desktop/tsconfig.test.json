@@ -11,6 +11,7 @@
     "src/model.ts",
     "src/ai-model.ts",
     "src/workflow-model.ts",
+    "src/task-finalization.ts",
     "src/presentation.ts",
     "src/experiment-model.ts",
     "src/experiment-runner.ts",

@@ -1,0 +1,3 @@
+#pragma once
+
+inline constexpr char example_nodes_json[] = R"AGDESC(@EXAMPLE_NODES_JSON@)AGDESC";

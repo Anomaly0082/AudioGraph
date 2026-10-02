@@ -15,6 +15,11 @@ const TasksPage =
   require("../../../build/desktop-model-tests/pages/TasksPage.js").default;
 const SettingsPage =
   require("../../../build/desktop-model-tests/pages/SettingsPage.js").default;
+const NodeCatalog =
+  require("../../../build/desktop-model-tests/components/NodeCatalog.js").default;
+const {
+  taskBlocksSubmission,
+} = require("../../../build/desktop-model-tests/task-finalization.js");
 
 const render = (Component, props) =>
   renderToStaticMarkup(React.createElement(Component, props));
@@ -31,7 +36,87 @@ const graph = {
   connections: [],
 };
 
-test("busy activity keeps four main pages accessible and experiments are not a main page", () => {
+test("external nodes use the ordinary catalog UI and retain their provenance", () => {
+  const node = {
+    typeId: "test.plugin.gain_v1",
+    displayName: "External Gain",
+    execution_domain: "synchronous",
+    inputs: [{ id: "audio", type: "Audio", required: true }],
+    outputs: [{ id: "audio", type: "Audio" }],
+    parameters: [
+      {
+        id: "gain_db",
+        type: "number",
+        required: true,
+        minimum: -24,
+        maximum: 12,
+      },
+    ],
+    plugin: {
+      id: "test.plugin",
+      implementation_version: "0.1.0",
+      package_sha256: "a".repeat(64),
+    },
+  };
+  const html = render(NodeCatalog, {
+    nodes: [node],
+    selectedId: node.typeId,
+    search: "",
+    onSearch: noop,
+    onSelect: noop,
+  });
+  assert.match(html, /External Gain/);
+  assert.match(html, /test.plugin/);
+  assert.match(html, /0.1.0/);
+  assert.match(html, /gain_db/);
+});
+
+test("plugin settings expose the selected directory and rejected package diagnostics without activation controls", () => {
+  const settings = {
+    config: { baseUrl: "", model: "", apiKey: "" },
+    editing: false,
+    settingsBusy: false,
+    settingsReady: true,
+    settingsError: "",
+    settingsNotice: "",
+    configStatus: "",
+    editConfig: noop,
+    saveCurrentSettings: noop,
+    clearSavedSettings: noop,
+  };
+  const session = {
+    allowDevices: false,
+    allowMonitor: false,
+    busy: null,
+    setAllowDevices: noop,
+    setAllowMonitor: noop,
+    connection: {
+      capabilities: {
+        nodes: [],
+        plugin_directory: "C:/test/plugins",
+        plugins: {
+          available: [{ plugin_id: "test.plugin", plugin_version: "0.1.0" }],
+          errors: [
+            {
+              package: "bad-package",
+              code: "plugin_invalid",
+              message: "Invalid package hash",
+            },
+          ],
+        },
+      },
+    },
+  };
+  const html = render(SettingsPage, { settings, session, workflowBusy: false });
+  assert.match(html, /C:\/test\/plugins/);
+  assert.match(html, /重启软件后生效/);
+  assert.match(html, /test.plugin/);
+  assert.match(html, /Invalid package hash/);
+  assert.match(html, /role="alert"/);
+  assert.doesNotMatch(html, /自动安装|立即启用|热加载/);
+});
+
+test("busy activity keeps the main pages accessible with a generic file page, not experiments", () => {
   const html = render(AppShell, {
     page: "editor",
     workspace: "C:/audio",
@@ -41,7 +126,8 @@ test("busy activity keeps four main pages accessible and experiments are not a m
   });
   const nav = html.match(/<nav aria-label="主导航">([\s\S]*?)<\/nav>/)?.[1];
   assert.ok(nav);
-  assert.equal((nav.match(/<button /g) ?? []).length, 4);
+  assert.equal((nav.match(/<button /g) ?? []).length, 5);
+  assert.match(nav, />文件<\/button>/);
   assert.match(nav, /运行记录/);
   assert.doesNotMatch(nav, /参数对比|任务与结果/);
   assert.doesNotMatch(nav, /disabled/);
@@ -54,13 +140,21 @@ test("busy activity keeps four main pages accessible and experiments are not a m
 });
 
 test("workspace uses one compact entry with a readable full path tooltip", () => {
-  const html = render(AppShell, { page: "workbench", workspace: "\\\\?\\C:\\audio\\TestSwitch",
-    onNavigate: noop, onWorkspace: noop });
+  const html = render(AppShell, {
+    page: "workbench",
+    workspace: "\\\\?\\C:\\audio\\TestSwitch",
+    onNavigate: noop,
+    onWorkspace: noop,
+  });
   assert.match(html, /工作区：TestSwitch/);
   assert.ok(html.includes('title="C:\\audio\\TestSwitch"'));
   assert.doesNotMatch(html, /工作区已打开|status-dot|<footer/);
-  const disconnected = render(AppShell, { page: "workbench", workspace: null,
-    onNavigate: noop, onWorkspace: noop });
+  const disconnected = render(AppShell, {
+    page: "workbench",
+    workspace: null,
+    onNavigate: noop,
+    onWorkspace: noop,
+  });
   assert.match(disconnected, />打开工作区<\/button>/);
 });
 
@@ -189,9 +283,109 @@ test("editor displays its independent draft while a task owns a different submis
   });
   assert.match(html, /draft-marker/);
   assert.doesNotMatch(html, /submitted-marker/);
-  assert.match(html, /查看现有任务/);
+  assert.match(html, /查看运行记录/);
   assert.doesNotMatch(html, /graph-connections|graph-edge-row/);
   assert.match(html, /中键拖动平移/);
+});
+
+test("editor submission follows task ownership and release, not the presence of a retained task", () => {
+  const draft = {
+    mode: "offline",
+    template: "text",
+    graphText: JSON.stringify(graph),
+    fileLabel: "draft.json",
+    blockFrames: "256",
+    duration: "10",
+    probe: true,
+    validationCurrent: true,
+    localGraph: { graph, error: "" },
+    setTemplate: noop,
+    editGraph: noop,
+    setMode: noop,
+    setBlockFrames: noop,
+    setDuration: noop,
+    setProbe: noop,
+  };
+  const task = (state, released = false, sessionId = "session-a") => ({
+    id: "task-1",
+    sessionId,
+    state,
+    released,
+    resultRead: released,
+    errors:
+      state === "failed"
+        ? [{ code: "output_exists", node_id: "output", parameter_id: "path" }]
+        : undefined,
+    submission: { mode: "offline", graph, options: {} },
+  });
+  const cases = [
+    [null, false],
+    ...["queued", "running", "cancelling", "unknown"].map((state) => [
+      task(state),
+      true,
+    ]),
+    ...["succeeded", "failed", "cancelled"].flatMap((state) => [
+      [task(state), true],
+      [task(state, true), false],
+    ]),
+    [task("running", false, "old-session"), false],
+  ];
+  function editor(current, changes = {}) {
+    return render(EditorPage, {
+      draft,
+      session: {
+        desktop: true,
+        busy: null,
+        connection: { sessionId: "session-a", capabilities: { nodes: [] } },
+        devices: { inputs: [], outputs: [] },
+        task: current,
+        taskBlocked: taskBlocksSubmission(current, "session-a"),
+      },
+      selection: { search: "" },
+      submittingLocked: false,
+      onSelection: noop,
+      onValidate: noop,
+      onRun: noop,
+      onLoadTemplate: noop,
+      onLoad: noop,
+      onSave: noop,
+      onDevices: noop,
+      onTasks: noop,
+      ...changes,
+    });
+  }
+  function disabled(html) {
+    const button = html.match(/<button\b([^>]*)>提交任务<\/button>/);
+    assert.ok(button, "Submit button must exist");
+    return /\bdisabled(?:=|\s|$)/.test(button[1]);
+  }
+  for (const [current, blocked] of cases) {
+    const html = editor(current);
+    assert.equal(disabled(html), blocked, JSON.stringify(current));
+    if (current)
+      assert.match(html, /查看运行记录/, "Retained history remains accessible");
+  }
+  const releasedFailure = task("failed", true);
+  assert.equal(
+    disabled(editor(releasedFailure, { submittingLocked: true })),
+    true,
+  );
+  assert.equal(
+    disabled(
+      editor(releasedFailure, {
+        draft: { ...draft, validationCurrent: false },
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    disabled(
+      editor(releasedFailure, {
+        draft: { ...draft, localGraph: { graph, error: "invalid" } },
+      }),
+    ),
+    true,
+  );
 });
 
 test("tasks page presents the submitted snapshot and authoritative output", () => {
@@ -262,4 +456,5 @@ test("settings page alone renders API Key as a password input", () => {
   assert.match(html, /type="password"/);
   assert.match(html, /SECRET_TEST_KEY_928/);
   assert.match(html, /允许音频设备访问/);
+  assert.doesNotMatch(html, /数据保存范围|草稿、AI提案和当前任务在切页时保留/);
 });

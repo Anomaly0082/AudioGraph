@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    { "id": "input", "type": "wav_input", "parameters": { "path": "input.wav" } },
+    { "id": "gain", "type": "org.audiograph.example.gain_v1", "parameters": { "gain_db": -6 } },
+    { "id": "output", "type": "wav_output", "parameters": { "path": "plugin-gain-output.wav" } }
+  ],
+  "connections": [
+    { "from": { "node": "input", "port": "audio" }, "to": { "node": "gain", "port": "audio" } },
+    { "from": { "node": "gain", "port": "audio" }, "to": { "node": "output", "port": "audio" } }
+  ],
+  "exports": [ { "name": "output_file", "node": "output", "port": "path" } ]
+}

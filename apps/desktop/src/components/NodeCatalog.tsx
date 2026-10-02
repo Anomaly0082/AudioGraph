@@ -56,6 +56,11 @@ export default function NodeCatalog({
           <h3>{node.displayName}</h3>
           <code>{node.typeId}</code>
           <span className="badge">{node.execution_domain}</span>
+          {node.plugin && (
+            <small>
+              插件：{node.plugin.id} · {node.plugin.implementation_version}
+            </small>
+          )}
           <p>{node.description}</p>
           {capability && (
             <div className="parameter-card">

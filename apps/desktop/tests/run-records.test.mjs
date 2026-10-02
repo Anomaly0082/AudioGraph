@@ -58,7 +58,6 @@ const render = (overrides = {}, props = {}) =>
     React.createElement(Page, {
       connected: true,
       records: { ...records, ...overrides },
-      taskActive: false,
       ...props,
     }),
   );
@@ -89,6 +88,52 @@ test("run details use view buttons and do not treat an unchecked reference as av
   assert.match(html, /尚未检查当前文件/);
   assert.doesNotMatch(html, /与记录一致|<details|<summary/);
   assert.doesNotMatch(html, /查看旧版参数实验/);
+  assert.doesNotMatch(html, /当前任务控制|释放记录/);
+});
+
+test("only the matching current manual Graph row offers stop", () => {
+  const live = { ...summary("live"), origin: "manual", state: "running" };
+  const currentTask = {
+    runId: "live",
+    state: "running",
+    busy: false,
+    onStop: noop,
+  };
+  const html = render(
+    { records: [live, summary("old")], record: null },
+    { currentTask },
+  );
+  assert.equal((html.match(/aria-label="停止 /g) ?? []).length, 1);
+  assert.match(html, /aria-label="停止 live"/);
+  assert.doesNotMatch(html, /当前任务控制|释放记录/);
+  const stale = render(
+    { records: [live], record: null },
+    { currentTask: { ...currentTask, runId: "different" } },
+  );
+  assert.doesNotMatch(stale, /aria-label="停止 /);
+  const ai = render(
+    { records: [{ ...live, origin: "ai" }], record: null },
+    { currentTask },
+  );
+  assert.doesNotMatch(ai, /aria-label="停止 /);
+});
+
+test("stopping waits for termination and terminal runs have no manual release action", () => {
+  const live = { ...summary("live"), origin: "manual", state: "running" };
+  const currentTask = {
+    runId: "live",
+    state: "cancelling",
+    busy: false,
+    onStop: noop,
+  };
+  const html = render({ records: [live], record: null }, { currentTask });
+  assert.match(html, /disabled="">正在停止…/);
+  const ended = render(
+    { records: [live], record: null },
+    { currentTask: { ...currentTask, state: "succeeded" } },
+  );
+  assert.doesNotMatch(ended, /aria-label="停止 |当前任务控制|释放记录/);
+  assert.match(ended, /已完成/);
 });
 test("missing and changed reference states are explicit without changing run success", () => {
   for (const [status, expected] of [
@@ -116,7 +161,14 @@ test("empty/disconnected history and corrupt-list warnings are visible", () => {
 });
 
 test("history detail omission is a recording warning, not a failed run", () => {
-  const html = render({ record: { ...record, result: null, error: null, recording_warning: "结果详情超限，未完整保存" } });
+  const html = render({
+    record: {
+      ...record,
+      result: null,
+      error: null,
+      recording_warning: "结果详情超限，未完整保存",
+    },
+  });
   assert.match(html, /已完成/);
   assert.match(html, /banner warning/);
   assert.match(html, /结果详情超限/);

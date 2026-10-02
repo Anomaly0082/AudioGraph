@@ -10,7 +10,6 @@ import {
   requireSuccess,
 } from "../api/desktop";
 import {
-  canAdvanceTaskState,
   canCancel,
   formatError,
   isCurrentTaskResponse,
@@ -24,13 +23,13 @@ import type {
   TaskView,
 } from "../types/desktop";
 import { cloneSubmission } from "../workflow-model";
-
-type TaskResponse = {
-  task_id: string;
-  state: TaskView["state"];
-  errors?: unknown[];
-  result?: unknown;
-};
+import {
+  createTaskFinalizer,
+  mergeTaskView,
+  taskBlocksSubmission,
+  type TaskIdentity,
+  type TaskResponse,
+} from "../task-finalization";
 type StartOptions = {
   validationCurrent?: boolean;
   ownedFailedTaskId?: string | null;
@@ -56,7 +55,11 @@ export function useAudioSession() {
   const [forcedWarning, setForcedWarning] = useState("");
   const [devices, setDevices] = useState<DeviceCatalog>(emptyDevices);
   const taskActive =
-    task !== null && !isTerminal(task.state) && task.state !== "unknown";
+    task !== null && task.sessionId === connection?.sessionId &&
+    !isTerminal(task.state) && task.state !== "unknown";
+  const taskBlocked = taskBlocksSubmission(task, connection?.sessionId);
+  const cleanupBusy = task?.sessionId === connection?.sessionId && !!task?.cleanupBusy;
+  const cleanupError = task?.sessionId === connection?.sessionId ? task?.cleanupError ?? "" : "";
 
   function setAllowDevices(value: boolean) {
     setAllowDevicesState(value);
@@ -70,29 +73,7 @@ export function useAudioSession() {
     setConnectionState(value);
   }
   function setTask(value: TaskView | null) {
-    const previous = taskRef.current;
-    if (
-      previous &&
-      value &&
-      previous.id === value.id &&
-      previous.sessionId === value.sessionId &&
-      !canAdvanceTaskState(previous.state, value.state)
-    )
-      return;
-    const next =
-      previous &&
-      value &&
-      previous.id === value.id &&
-      previous.sessionId === value.sessionId &&
-      isTerminal(previous.state) &&
-      previous.state === value.state
-        ? {
-            ...value,
-            submission: previous.submission,
-            result: value.result === undefined ? previous.result : value.result,
-            errors: value.errors === undefined ? previous.errors : value.errors,
-          }
-        : value;
+    const next = mergeTaskView(taskRef.current, value);
     taskRef.current = next;
     setTaskState(next);
   }
@@ -182,28 +163,37 @@ export function useAudioSession() {
       throw new Error("连接已变化，迟到的响应已忽略。请检查任务与输出状态。");
     }
   }
-  async function fetchTaskResult(
-    id: string,
-    target: Connection,
-    epoch: number,
-  ) {
-    const data = await guardedRpc<TaskResponse>(
-      { op: "tasks.result", task_id: id },
-      target,
-    );
+  function readCurrentTask(identity: TaskIdentity): TaskView | null {
     const previous = taskRef.current;
     if (
       !previous ||
-      !isCurrentTaskResponse(epoch, epochRef.current, id, previous.id) ||
-      previous.sessionId !== target.sessionId
+      !isCurrentTaskResponse(identity.epoch, epochRef.current, identity.taskId, previous.id) ||
+      previous.sessionId !== identity.sessionId ||
+      connectionRef.current?.sessionId !== identity.sessionId
     )
-      return;
-    setTask({
-      ...previous,
-      state: data.state,
-      errors: data.errors,
-      result: data.result,
+      return null;
+    return previous;
+  }
+  const finalizerRef = useRef<ReturnType<typeof createTaskFinalizer> | null>(null);
+  if (!finalizerRef.current) {
+    finalizerRef.current = createTaskFinalizer({
+      readCurrent: readCurrentTask,
+      update: (identity, patch) => {
+        const current = readCurrentTask(identity);
+        if (current) setTask({ ...current, ...patch });
+      },
+      result: (identity) => guardedRpc<TaskResponse>(
+        { op: "tasks.result", task_id: identity.taskId },
+        connectionRef.current!,
+      ),
+      release: (identity) => guardedRpc<{ task_id: string; released: boolean }>(
+        { op: "tasks.release", task_id: identity.taskId },
+        connectionRef.current!,
+      ),
     });
+  }
+  function fetchTaskResult(id: string, target: Connection, epoch: number, retry = false) {
+    return finalizerRef.current!.finalize({ taskId: id, sessionId: target.sessionId, epoch }, retry);
   }
   useEffect(() => {
     if (
@@ -232,7 +222,9 @@ export function useAudioSession() {
           current.sessionId !== target.sessionId
         )
           return;
+        if (data.task_id !== id) throw new Error("后端返回的任务 ID 不匹配。");
         if (isTerminal(data.state)) {
+          setTask({ ...current, state: data.state, errors: data.errors });
           await fetchTaskResult(id, target, epoch);
           return;
         }
@@ -249,7 +241,7 @@ export function useAudioSession() {
         )
           return;
         setError(formatError(reason));
-        setTask({ ...current, state: "unknown" });
+        if (!isTerminal(current.state)) setTask({ ...current, state: "unknown" });
       }
     };
     timer = setTimeout(tick, 500);
@@ -361,17 +353,13 @@ export function useAudioSession() {
         throw new Error("请先校验当前 Graph。");
       const epoch = epochRef.current;
       const existing = taskRef.current;
-      if (
-        existing &&
-        !(
-          options.ownedFailedTaskId &&
-          existing.id === options.ownedFailedTaskId &&
-          existing.sessionId === target.sessionId &&
-          existing.state === "failed"
-        )
-      ) {
+      if (taskBlocksSubmission(existing, target.sessionId)) {
         throw new Error(
-          "请先释放上一次任务记录；AI 只可释放本会话内自己持有的失败任务。",
+          existing?.state === "unknown"
+            ? "任务状态未知，请检查输出后重新连接；不会自动重跑。"
+            : existing?.cleanupError
+              ? "上一次任务收尾失败，请先重试收尾。"
+              : "请等待当前任务结束并完成自动收尾。",
         );
       }
       if (snapshot.mode === "realtime" && !target.allowDevices)
@@ -389,13 +377,6 @@ export function useAudioSession() {
       ensureCurrent(target, epoch);
       if (taskRef.current !== existing)
         throw new Error("任务已变化，未提交新任务。");
-      if (existing) {
-        await guardedRpc({ op: "tasks.release", task_id: existing.id }, target);
-        ensureCurrent(target, epoch);
-        if (taskRef.current !== existing)
-          throw new Error("任务已变化，未提交新任务。");
-        setTask(null);
-      }
       const data = await guardedRpc<TaskResponse>(
         { op: "tasks.start", ...snapshot },
         target,
@@ -419,6 +400,7 @@ export function useAudioSession() {
       ) {
         setTask({
           id: data.task_id,
+          runId: data.run_id,
           sessionId: target.sessionId,
           state: "unknown",
           submission: snapshot,
@@ -427,6 +409,7 @@ export function useAudioSession() {
       }
       setTask({
         id: data.task_id,
+        runId: data.run_id,
         sessionId: target.sessionId,
         state: data.state,
         errors: data.errors,
@@ -437,7 +420,7 @@ export function useAudioSession() {
       return data.task_id;
     });
   }
-  async function cancelTask(expectedTaskId?: string): Promise<void> {
+  async function cancelTask(expectedTaskId?: string, expectedSessionId?: string): Promise<void> {
     await perform("请求取消", async () => {
       const current = taskRef.current,
         target = connectionRef.current;
@@ -445,7 +428,8 @@ export function useAudioSession() {
         !current ||
         !target ||
         current.sessionId !== target.sessionId ||
-        (expectedTaskId && current.id !== expectedTaskId)
+        (expectedTaskId && current.id !== expectedTaskId) ||
+        (expectedSessionId && current.sessionId !== expectedSessionId)
       )
         throw new Error("任务已变化，未发送取消请求。");
       if (!canCancel(current.state)) return;
@@ -463,33 +447,35 @@ export function useAudioSession() {
         )
       )
         return;
-      if (isTerminal(data.state))
+      if (data.task_id !== current.id || !["queued", "running", "cancelling", "succeeded", "failed", "cancelled"].includes(data.state))
+        throw new Error("后端返回了无效的停止响应；请检查任务状态。");
+      if (isTerminal(data.state)) {
+        const latest = taskRef.current;
+        if (latest) setTask({ ...latest, state: data.state, errors: data.errors });
         await fetchTaskResult(current.id, target, epoch);
-      else setTask({ ...current, state: data.state, errors: data.errors });
+      } else {
+        const latest = taskRef.current;
+        if (latest) setTask({ ...latest, state: data.state, errors: data.errors });
+      }
     });
   }
-  async function releaseTask(): Promise<void> {
-    await perform("释放记录", async () => {
+  async function retryCleanup(): Promise<void> {
+    await perform("收尾中", async () => {
       const current = taskRef.current,
         target = connectionRef.current;
-      if (!current) return;
-      if (!isTerminal(current.state) && current.state !== "unknown")
-        throw new Error("活动任务尚未结束，不能释放记录。");
-      if (
-        target &&
-        current.sessionId === target.sessionId &&
-        isTerminal(current.state)
-      ) {
-        const epoch = epochRef.current;
-        await guardedRpc({ op: "tasks.release", task_id: current.id }, target);
-        if (epoch !== epochRef.current || taskRef.current?.id !== current.id)
-          return;
-      }
-      setTask(null);
-      setNotice(
-        "记录已清除，可以运行新任务。输出文件未删除；已有文件仍不会被覆盖。",
-      );
+      if (!current || !target || current.sessionId !== target.sessionId)
+        throw new Error("会话已变化，请检查输出后重新连接。");
+      await fetchTaskResult(current.id, target, epochRef.current, true);
     });
+  }
+  // Compatibility for the older experiment runner: it explicitly clears its
+  // consumed in-memory view. The current UI retains terminal views instead.
+  async function releaseTask(): Promise<void> {
+    const current = taskRef.current;
+    if (!current) return;
+    if (!current.released) await retryCleanup();
+    if (taskRef.current?.id === current.id && taskRef.current?.sessionId === current.sessionId && taskRef.current.released)
+      setTask(null);
   }
   async function listDevices(): Promise<DeviceCatalog> {
     return perform("枚举设备", async () => {
@@ -533,6 +519,9 @@ export function useAudioSession() {
     connection,
     task,
     taskActive,
+    taskBlocked,
+    cleanupBusy,
+    cleanupError,
     busy,
     error,
     setError,
@@ -548,9 +537,11 @@ export function useAudioSession() {
     startSubmission,
     cancelTask,
     releaseTask,
+    retryCleanup,
     listDevices,
     inspectAudio,
     readTask: () => taskRef.current,
+    readTaskBlocked: () => taskBlocksSubmission(taskRef.current, connectionRef.current?.sessionId),
     readBusy: () => busyRef.current,
   };
 }

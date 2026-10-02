@@ -196,6 +196,8 @@ export function useGraphDraft(sessionId: string | null) {
     setProbe,
     localGraph,
     validationKey,
+    captureDraftKey: () => keyRef.current,
+    isCurrentDraftKey: (key: string) => keyRef.current === key,
     validatedKey,
     setValidatedKey,
     validationCurrent,

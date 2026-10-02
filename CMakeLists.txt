@@ -82,13 +82,21 @@ if(WIN32)
     target_link_libraries(audio_tasks PRIVATE audio_device_session)
 endif()
 add_library(audio_control STATIC src/control_protocol.cpp)
-target_link_libraries(audio_control PUBLIC audio_tasks PRIVATE audio_graph_io nlohmann_json::nlohmann_json)
+
+# Native plugin IO/adaptation is outside the algorithm core and public SDK.
+add_library(audio_plugins STATIC src/plugin_host.cpp)
+target_link_libraries(audio_plugins PUBLIC audio_core PRIVATE audio_graph_io nlohmann_json::nlohmann_json)
+target_include_directories(audio_plugins PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/sdk/plugin/include")
+if(WIN32)
+    target_link_libraries(audio_plugins PRIVATE bcrypt)
+endif()
+target_link_libraries(audio_control PUBLIC audio_tasks PRIVATE audio_graph_io audio_plugins nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(audio_control PRIVATE audio_device_session)
 endif()
 add_executable(control-cli apps/control_cli/main.cpp)
 target_link_libraries(control-cli PRIVATE audio_control audio_graph_io)
-foreach(task_target IN ITEMS audio_tasks audio_control control-cli)
+foreach(task_target IN ITEMS audio_tasks audio_control audio_plugins control-cli)
     if(MSVC)
         target_compile_options(${task_target} PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
     else()
@@ -140,6 +148,28 @@ add_custom_command(TARGET control-cli POST_BUILD
 endif()
 
 include(CTest)
+
+# Separately installed SDK + copied external plugin + C/C++ ABI test host.
+# Does not register or load plugins in any application executable.
+if(BUILD_TESTING AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC
+   AND NOT CMAKE_GENERATOR_PLATFORM MATCHES "ARM")
+    add_test(NAME plugin-sdk-standalone COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/plugin-sdk-standalone"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DPLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DCONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_sdk_standalone.cmake")
+    set_tests_properties(plugin-sdk-standalone PROPERTIES TIMEOUT 180)
+    set_tests_properties(plugin-sdk-standalone PROPERTIES FIXTURES_SETUP plugin_sdk_package)
+    add_executable(plugin-host-tests tests/plugin_host_tests.cpp)
+    target_link_libraries(plugin-host-tests PRIVATE audio_control audio_plugins audio_graph_io nlohmann_json::nlohmann_json bcrypt)
+    target_compile_options(plugin-host-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    add_test(NAME plugin-host-tests COMMAND plugin-host-tests
+        "${CMAKE_CURRENT_BINARY_DIR}/plugin-sdk-standalone/plugin-build/package/$<CONFIG>")
+    set_tests_properties(plugin-host-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED plugin_sdk_package)
+endif()
 
 if(BUILD_TESTING)
     add_executable(format-nodes-tests tests/format_nodes_tests.cpp)

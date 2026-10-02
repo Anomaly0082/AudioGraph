@@ -1,13 +1,20 @@
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration,Instant};
 
 const TEXT_LIMIT: u64 = 64 * 1024;
 const COPY_LIMIT: u64 = 256 * 1024 * 1024;
 const AI_QUOTA: u64 = 512 * 1024 * 1024;
+const AI_DIRECTORY_DEPTH: usize = 3;
+const LIST_PAGE_LIMIT: usize = 200;
+const LIST_PAGE_BYTES: usize = 16 * 1024;
+const LIST_SCAN_LIMIT: usize = 10_000;
+const LIST_SCAN_TIME: Duration = Duration::from_secs(2);
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -177,27 +184,86 @@ fn string_arg<'a>(args: &'a Map<String, Value>, name: &str) -> &'a str {
     args.get(name).and_then(Value::as_str).expect("validated string argument")
 }
 
+fn listing_args(args: &Value) -> Result<(&str,&str,usize,usize),String> {
+    let args = args.as_object().ok_or("Tool arguments must be an object")?;
+    if args.keys().any(|key| !matches!(key.as_str(),"space" | "path" | "offset" | "limit")) {
+        return Err("Unknown tool argument".into());
+    }
+    let space = args.get("space").and_then(Value::as_str).ok_or("Missing or invalid argument: space")?;
+    let path = match args.get("path") {
+        None => "",
+        Some(value) => value.as_str().ok_or("Invalid argument: path")?,
+    };
+    let integer = |key: &str,default: usize,max: usize| -> Result<usize,String> {
+        match args.get(key) {
+            None => Ok(default),
+            Some(value) => value.as_u64().and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value <= max).ok_or_else(|| format!("{key} must be an integer from 0 to {max}")),
+        }
+    };
+    let offset = integer("offset",0,LIST_SCAN_LIMIT)?;
+    let limit = integer("limit",100,LIST_PAGE_LIMIT)?;
+    if limit == 0 { return Err("limit must be an integer from 1 to 200".into()); }
+    Ok((space,path,offset,limit))
+}
+
 fn regular_file(path: &Path) -> Result<Metadata, String> {
     let meta = normal_metadata(path)?.ok_or("File does not exist")?;
     if !meta.is_file() || is_hardlinked(path, &meta) { return Err("Expected an independent regular file".into()); }
     Ok(meta)
 }
 
-fn create_ai_parents(root: &Path, target: &Path) -> Result<(), String> {
-    let parent = target.parent().ok_or("File has no parent directory")?;
-    let relative = parent.strip_prefix(root).map_err(|_| "Path escapes AI workspace")?;
+fn create_ai_directory(root: &Path, directory: &Path) -> Result<bool, String> {
+    let relative = directory.strip_prefix(root).map_err(|_| "Path escapes AI workspace")?;
+    // Check the entire requested depth before creating even the first component.
+    if relative.components().count() > AI_DIRECTORY_DEPTH {
+        return Err("AI directories support at most 3 levels below the workspace root".into());
+    }
+    check_existing_chain(root)?;
+    if !normal_metadata(root)?.is_some_and(|meta| meta.is_dir()) { return Err("AI workspace is not a directory".into()); }
     let mut current = root.to_path_buf();
+    let mut created = false;
     for part in relative.components() {
         current.push(part.as_os_str());
+        check_existing_chain(&current)?;
         match normal_metadata(&current)? {
             Some(meta) if meta.is_dir() => {},
             Some(_) => return Err("Parent path is not a directory".into()),
             None => {
-                fs::create_dir(&current).map_err(|e| io_error("Cannot create AI directory", e))?;
+                match fs::create_dir(&current) {
+                    Ok(()) => { if current == directory { created = true; } },
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                    Err(error) => return Err(io_error("Cannot create AI directory", error)),
+                }
+                check_existing_chain(&current)?;
                 normal_metadata(&current)?.filter(Metadata::is_dir).ok_or("AI directory changed unexpectedly")?;
             }
         }
     }
+    Ok(created)
+}
+
+fn create_ai_parents(root: &Path, target: &Path) -> Result<(), String> {
+    let parent = target.parent().ok_or("File has no parent directory")?;
+    create_ai_directory(root, parent).map(|_| ())
+}
+
+fn create_user_parent(root: &Path, target: &Path) -> Result<(), String> {
+    let parent = target.parent().ok_or("File has no parent")?;
+    match normal_metadata(parent)? {
+        Some(meta) if meta.is_dir() => {},
+        Some(_) => return Err("User file parent must be a directory".into()),
+        None if parent.parent() == Some(root) => {
+            match fs::create_dir(parent) {
+                Ok(()) => {},
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => return Err(io_error("Cannot create user folder", error)),
+            }
+        },
+        None => return Err("Only one new top-level user folder can be created automatically".into()),
+    }
+    check_existing_chain(parent)?;
+    if !normal_metadata(parent)?.is_some_and(|m| m.is_dir()) { return Err("User file parent must be a directory".into()); }
     Ok(())
 }
 
@@ -235,6 +301,37 @@ fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
 }
 
 impl ToolWorkspaces {
+    // Browsing must not initialize AI scratch directories or write app data.
+    pub(crate) fn new_read_only(user_root: &Path, app_data_root: &Path) -> Result<Self,String> {
+        use std::path::Component;
+        let user_root = canonical_normal_dir(user_root)?;
+        if !app_data_root.is_absolute() || app_data_root.components().any(|part|
+            matches!(part,Component::ParentDir | Component::CurDir)) {
+            return Err("Application data path must be absolute and normalized".into());
+        }
+        check_existing_chain(app_data_root)?;
+        let mut missing = Vec::new();
+        let mut existing = app_data_root;
+        while normal_metadata(existing)?.is_none() {
+            missing.push(existing.file_name().ok_or("Invalid application data path")?.to_os_string());
+            existing = existing.parent().ok_or("Invalid application data path")?;
+        }
+        let mut app_data = canonical_normal_dir(existing)?;
+        for part in missing.iter().rev() { app_data.push(part); }
+        if contains_path(&user_root,&app_data) || contains_path(&app_data,&user_root) {
+            return Err("User workspace overlaps application data".into());
+        }
+        let hash_input = if cfg!(windows) { user_root.to_string_lossy().to_lowercase() }
+            else { user_root.to_string_lossy().into_owned() };
+        let ai_root = app_data.join("agent-workspaces")
+            .join(format!("{:x}",Sha256::digest(hash_input.as_bytes()))).join("files");
+        check_existing_chain(&ai_root)?;
+        if normal_metadata(&ai_root)?.is_some_and(|meta| !meta.is_dir()) {
+            return Err("AI workspace is not a directory".into());
+        }
+        Ok(Self { user_root,ai_root })
+    }
+
     pub fn new(user_root: &Path, app_data_root: &Path) -> Result<Self, String> {
         let user_root = canonical_normal_dir(user_root)?;
         let app_data_root = prepare_app_data(app_data_root, &user_root)?;
@@ -317,25 +414,88 @@ impl ToolWorkspaces {
         Ok(size)
     }
 
+    // Editor save-as has stricter semantics than the AI scratch-file writer: both
+    // spaces create a new independent file and preserve every existing target.
+    pub(crate) fn write_new_text(&self, space: &str, path: &str, text: &str) -> Result<Value,String> {
+        let bytes = text.as_bytes();
+        if bytes.len() as u64 > TEXT_LIMIT { return Err("Text exceeds 64 KiB".into()); }
+        let target = self.file_path(space,path,true)?;
+        if normal_metadata(&target)?.is_some() { return Err("Save as must create a new file; target already exists".into()); }
+        if space == "ai" {
+            if self.quota_size()?.checked_add(bytes.len() as u64).is_none_or(|sum| sum > AI_QUOTA) {
+                return Err("AI quota exceeded".into());
+            }
+            create_ai_parents(&self.ai_root,&target)?;
+        } else { create_user_parent(&self.user_root,&target)?; }
+        let target = self.file_path(space,path,true)?;
+        let (temp,mut file) = temp_file(target.parent().ok_or("File has no parent")?)?;
+        let written = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        let result = written.map_err(|error| io_error("Cannot write new file",error))
+            .and_then(|_| fs::hard_link(&temp,&target).map_err(|error| io_error("Save as must create a new file",error)));
+        let removed = fs::remove_file(&temp).map_err(|error| io_error("Cannot remove temporary file",error));
+        result?;
+        removed?;
+        Ok(json!({"space":space,"path":path}))
+    }
+
+    pub(crate) fn list_workspace_bounded(&self,space: &str,path: &str,offset: usize,limit: usize,
+        scan_limit: usize,deadline: Instant) -> Result<Value,String> {
+        if offset > LIST_SCAN_LIMIT || limit == 0 || limit > LIST_PAGE_LIMIT {
+            return Err("Listing offset or limit exceeds its bounds".into());
+        }
+        let dir = self.checked_path(space,path,false)?;
+        if !normal_metadata(&dir)?.is_some_and(|meta| meta.is_dir()) { return Err("Expected a directory".into()); }
+        // Keep only the sorted prefix needed for this page, even if enumeration is
+        // unsorted. The scan itself is separately bounded; no recursive traversal.
+        let prefix_limit = offset+limit;
+        let mut first: BTreeMap<String,(&str,Option<u64>)> = BTreeMap::new();
+        let mut total = 0usize;
+        let mut partial = false;
+        for entry in fs::read_dir(&dir).map_err(|error| io_error("Cannot list directory",error))? {
+            if total >= scan_limit || Instant::now() >= deadline { partial = true; break; }
+            let entry = entry.map_err(|error| io_error("Cannot list directory",error))?;
+            let meta = normal_metadata(&entry.path())?.ok_or("Entry disappeared")?;
+            let kind = if meta.is_dir() { "directory" }
+                else if meta.is_file() && !is_hardlinked(&entry.path(),&meta) { "file" }
+                else { return Err("Directory contains an unsupported entry".into()); };
+            let name = entry.file_name().into_string().map_err(|_| "Directory contains a non-UTF-8 filename")?;
+            first.insert(name,(kind,if meta.is_file() { Some(meta.len()) } else { None }));
+            if first.len() > prefix_limit { first.pop_last(); }
+            total += 1;
+        }
+        self.checked_path(space,path,false)?;
+        let mut entries = Vec::new();
+        let mut page_bytes = 2usize; // The serialized array's brackets, plus each row and comma.
+        let mut page_byte_limited = false;
+        for (name,(kind,bytes)) in first.into_iter().skip(offset).take(limit) {
+            let item = json!({"name":name,"kind":kind,"bytes":bytes});
+            let encoded = serde_json::to_vec(&item).map_err(|error| format!("Cannot encode directory entry: {error}"))?;
+            let row_bytes = encoded.len()+if entries.is_empty() { 0 } else { 1 };
+            if page_bytes+row_bytes > LIST_PAGE_BYTES {
+                if entries.is_empty() { return Err("A directory entry exceeds the 16 KiB page byte budget".into()); }
+                page_byte_limited = true;
+                break;
+            }
+            page_bytes += row_bytes;
+            entries.push(item);
+        }
+        let end = offset.saturating_add(entries.len());
+        let next_offset = if end < total { Some(end) } else { None };
+        let warnings: Vec<&str> = if partial {
+            vec!["Directory scan reached its entry or time budget. Only the scanned subset is sorted and paginated; total is unknown. Do not treat a partial page as a complete directory."]
+        } else { Vec::new() };
+        Ok(json!({"space":space,"path":path,"entries":entries,"offset":offset,"limit":limit,
+            "total":if partial { None } else { Some(total) },"next_offset":next_offset,
+            "truncated":partial || next_offset.is_some(),"partial":partial,
+            "page_byte_limited":page_byte_limited,"warnings":warnings}))
+    }
+
     pub fn dispatch(&self, name: &str, args: &Value) -> Result<Value, String> {
         match name {
             "workspace_list" => {
-                let args = exact_args(args, &["space"], &["path"])?;
-                let space = string_arg(args, "space");
-                let path = args.get("path").and_then(Value::as_str).unwrap_or("");
-                let dir = self.checked_path(space, path, false)?;
-                if !normal_metadata(&dir)?.is_some_and(|m| m.is_dir()) { return Err("Expected a directory".into()); }
-                let mut entries = Vec::new();
-                let mut truncated = false;
-                for entry in fs::read_dir(dir).map_err(|e| io_error("Cannot list directory", e))? {
-                    let entry = entry.map_err(|e| io_error("Cannot list directory", e))?;
-                    let meta = normal_metadata(&entry.path())?.ok_or("Entry disappeared")?;
-                    if entries.len() == 100 { truncated = true; break; }
-                    let kind = if meta.is_dir() { "directory" } else if meta.is_file() && !is_hardlinked(&entry.path(), &meta) { "file" } else { return Err("Directory contains an unsupported entry".into()); };
-                    entries.push(json!({"name":entry.file_name().to_string_lossy(), "kind":kind, "bytes":if meta.is_file() { Some(meta.len()) } else { None }}));
-                }
-                entries.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
-                Ok(json!({"space":space,"path":path,"entries":entries,"truncated":truncated}))
+                let (space,path,offset,limit) = listing_args(args)?;
+                self.list_workspace_bounded(space,path,offset,limit,LIST_SCAN_LIMIT,Instant::now()+LIST_SCAN_TIME)
             }
             "file_read_text" => {
                 let args = exact_args(args, &["space", "path"], &[])?;
@@ -349,6 +509,14 @@ impl ToolWorkspaces {
                 if bytes.len() as u64 > TEXT_LIMIT { return Err("Text file exceeds 64 KiB".into()); }
                 let content = String::from_utf8(bytes).map_err(|_| "File is not UTF-8 text")?;
                 Ok(json!({"space":space,"path":path,"content":content,"bytes":meta.len()}))
+            }
+            "directory_create" => {
+                let args = exact_args(args, &["path"], &[])?;
+                let path = string_arg(args, "path");
+                let target = self.file_path("ai", path, true)?;
+                self.check_quota()?;
+                let created = create_ai_directory(&self.ai_root, &target)?;
+                Ok(json!({"space":"ai","path":path,"created":created,"max_depth":AI_DIRECTORY_DEPTH}))
             }
             "file_write_text" => {
                 let args = exact_args(args, &["path", "content"], &[])?;
@@ -428,10 +596,26 @@ impl ToolWorkspaces {
                 let source = self.file_path("ai", path, false)?;
                 let meta = regular_file(&source)?;
                 if meta.len() > COPY_LIMIT { return Err("Export exceeds 256 MiB".into()); }
+                // Validate/open the source before creating any user directory.
+                let mut input = File::open(&source).map_err(|e| io_error("Cannot open AI file", e))?;
                 let target = self.file_path("user", user_path, true)?;
                 let parent = target.parent().ok_or("Export has no parent")?;
-                if !normal_metadata(parent)?.is_some_and(|m| m.is_dir()) { return Err("Export parent must exist".into()); }
-                let mut input = File::open(&source).map_err(|e| io_error("Cannot open AI file", e))?;
+                match normal_metadata(parent)? {
+                    Some(meta) if meta.is_dir() => {},
+                    Some(_) => return Err("Export parent must be a directory".into()),
+                    None if parent.parent() == Some(self.user_root.as_path()) => {
+                        // Only one top-level output folder may be auto-created; no recursive mkdir.
+                        match fs::create_dir(parent) {
+                            Ok(()) => {},
+                            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                            Err(error) => return Err(io_error("Cannot create export folder", error)),
+                        }
+                    },
+                    None => return Err("Only one new top-level export folder can be created automatically".into()),
+                }
+                // A competing mkdir must not let a link or non-directory bypass validation.
+                let target = self.file_path("user", user_path, true)?;
+                if !normal_metadata(parent)?.is_some_and(|m| m.is_dir()) { return Err("Export parent must be a directory".into()); }
                 let mut output = OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| io_error("Export must create a new user file", e))?;
                 let copied = std::io::copy(&mut Read::take(&mut input, COPY_LIMIT + 1), &mut output);
                 let result = match copied {

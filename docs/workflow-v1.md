@@ -4,12 +4,24 @@ Workflow是由宿主程序执行的JSON文件，不是AI整体任务的状态机
 
 ## 文件与调用
 
-只在工具助手的Workflow模式开放：
+AI工具只在工具助手的Workflow模式开放；人工也可以从“编辑器 → Workflow”直接校验和运行，不需要模型API：
 
 - `workflow_validate({space:"user"|"ai",path:"gain.workflow.json"})`：读取一次文件，严格解析JSON并检查结构、引用作用域、工具白名单和预算；不运行步骤、不写文件、不启动音频处理。
 - `workflow_run({space:"user"|"ai",path:"gain.workflow.json",inputs?:{...}})`：读取并固定本次程序，覆盖已声明的输入，然后执行。未知输入键拒绝，不重新读取执行中被修改的源文件。
 
 文件最多64KiB，重复键、未知字段、未知步骤和未知工具拒绝。`space`只决定程序文件来源；所有内部文件操作仍按工具自己的空间规则，Graph只能在AI空间执行。不能借用户空间的Workflow文件获得用户文件修改权限。
+
+## 桌面手动编辑
+
+编辑器提供Graph/Workflow两页签，各自保留草稿。Workflow首版使用JSON文本，文件工作区可选用户或AI，相对路径用于打开/另存。打开可以读取语法错误的文本供修复；另存前必须通过后端静态校验，且两空间都只新建、不覆盖，沿用AI目录3层与用户新建一级目录的限制。
+
+编辑后点击“校验”，只有当前工作区和完全相同的草稿仍有效时才可点击“运行 Workflow”。实际运行直接传入固定文本快照，后端重新验证，不重新读取已保存文件，也不调用模型。运行中编辑下一份草稿不会改动当前执行；页面切换不会停止任务，停止按钮和关窗取消等待私有音频后端清理。连接失效时会取消仍持有的旧请求；迟到结果不写入新工作区。
+
+手动Workflow及其内部Graph均标记`origin:manual`，但内部Graph仍在AI文件空间执行，记录中的`configuration.file_space:ai`明确这一点。人工直接运行Graph的路径规则仍是用户工作区。结果进入既有运行记录，页面仅显示状态及“查看运行记录”入口，不新增独立结果系统。
+
+AI成功写出的完整Workflow文本可点击“载入 Workflow 编辑器”，确认后只替换草稿，必须另行校验与点击运行。该入口载入生成时的内容快照，不保证磁盘上的同名文件之后没有改变；不接受已省略详情的事件作为完整配置。
+
+人工编辑器增量验证：前端120项、Rust138项通过，付费API实测1项忽略；实现代理交叉检查完成。覆盖纯校验无写入、坏JSON载入修复、另存无覆盖/路径限制、运行快照、取消与关窗共享清理、真实C++manual父子记录及AI执行空间、AI只载入不执行。未操作真实窗口；手动验收可先将`examples/workflows/condition.workflow.json`粘入Workflow页签，校验运行后查看记录，再用实际音频配置验证。
 
 ## 最小结构
 
@@ -47,7 +59,7 @@ Workflow是由宿主程序执行的JSON文件，不是AI整体任务的状态机
 - `for_each`：`{"id":"batch","type":"for_each","items":表达式,"steps":[...]}`。items必须为数组，顺序处理，结果为每次迭代的局部步骤结果对象数组。单层最多16个元素；外层已完成的步骤可读，内层绑定在迭代结束后丢弃。
 - `if`：`{"id":"choice","type":"if","condition":{"op":"lt","left":表达式,"right":表达式},"then":[...],"else":[...]}`。else可省略。仅执行所选分支，结果为`{"branch":"then"|"else","steps":{局部结果}}`。op支持eq/ne/lt/lte/gt/gte；顺序比较要求有限数值，eq/ne按JSON值比较。没有while、跳转或递归。
 
-`call`白名单固定为本轮已有基础工具：workspace_list、file_read_text、file_write_text、file_delete、file_copy_to_ai、file_export、audio_inspect、nodes_list、graph_validate、graph_run。不能调用workflow_run/workflow_validate、模型接口或宿主设置命令。
+`call`白名单为基础工具：workspace_list、directory_create、file_read_text、file_write_text、file_delete、file_copy_to_ai、file_export、audio_inspect、nodes_list、graph_validate、graph_run。directory_create仅创建AI空间目录，最多3层；file_export可自动创建用户空间下一级结果目录但不覆盖已有文件。不能调用workflow_run/workflow_validate、历史查询工具、模型接口或宿主设置命令。
 
 Graph可在call的args中写成带值引用的JSON结构，也可整体作为输入传入。首版不提供任意JSON字符串解析或通用对象补丁指令；已有Graph内容可由外层AI读取后放入输入/调用模板。
 
@@ -63,7 +75,9 @@ limits默认：max_steps=128、max_tool_calls=32、max_graph_runs=8、timeout_ms
 
 校验只保证程序静态契约；运行时输入类型、文件存在性、Graph合法性和底层资源仍由工具再次检查。输入、返回值和结果超限必须显式失败，不静默截断成成功。没有后台恢复、并行步骤、文件事务或模型自动修复。
 
-此处预算是程序执行上限，不代表模型上下文容量。外层AI请求仍受128KiB限制；若完整工具结果使本轮请求超限，会明确停止，不自动丢弃当前结果或继续。首版应返回精简outputs并限制批次大小；结果分页/持久化索引尚未实现。
+此处预算是程序执行上限，不代表模型上下文容量。外层AI请求仍受128KiB限制。Graph/Workflow执行回执超过12KiB时，仅模型上下文改用明确标注`complete:false`的摘要，保留成功/失败、状态、记录ID、错误及保存警告；本地工具详情和运行库保留原返回报告（仍受各自存储上限）。模型可通过`runs_read`按记录ID及JSON Pointer读取结果；保存警告意味着记录可能不完整。多个消息累计仍可能达到128KiB，此时明确停止，不自动无限续跑。
+
+注意两层返回结构不同：外层AI工具协议是`{ok,data}`，Workflow内部call只保存原始data，不带这一层包装。例如Graph导出值为`/steps/render/result/outputs/peak/value`；循环第一个元素内步骤为`/steps/batch/0/child`；条件分支内步骤为`/steps/choice/steps/child`。这些说明同时提供给模型，减少依靠试错猜路径。
 
 首版变量是不可变的步骤结果。for_each遍历有限列表，不能读取前一次迭代的局部变量或更新累加器；自适应收敛循环暂不支持。
 

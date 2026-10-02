@@ -11,8 +11,14 @@ mod ai_experiments;
 mod tool_workspaces;
 mod agent_tools;
 mod agent_runtime;
+mod conversation_store;
+mod conversation_commands;
 mod workflow;
+mod workflow_editor;
+mod workspace_browser;
+mod plugin_snapshot;
 mod run_records;
+mod run_history_tools;
 #[cfg(test)]
 mod run_records_review_tests;
 #[cfg(test)]
@@ -60,8 +66,22 @@ fn main() {
         .manage(Arc::new(ai_settings::SettingsStore::default()))
         .manage(Arc::new(experiments::ExperimentStore::default()))
         .manage(Arc::new(agent_runtime::AgentManager::default()))
+        .manage(Arc::new(conversation_store::ConversationStore::default()))
         .manage(Arc::new(run_records::RunStore::default()))
         .manage(Arc::new(commands::ManualRunTracker::default()))
+        .setup(|app| {
+            let manager = app.state::<Arc<backend::BackendManager>>();
+            let captured = (|| {
+                let directory = app.path().app_config_dir().map_err(|error| error.to_string())?.join("plugins");
+                let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+                plugin_snapshot::PluginSnapshot::capture(&directory,&data).map(Arc::new)
+                    .map_err(|error| format!("插件目录 {}：{error}",directory.display()))
+            })();
+            // A capture failure is retained by the manager and shown on connection;
+            // setup must never silently substitute an empty plugin selection.
+            let _ = manager.configure_plugin_snapshot(captured);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::disconnect,
@@ -84,9 +104,19 @@ fn main() {
             agent_runtime::agent_turn,
             agent_runtime::agent_cancel,
             agent_runtime::agent_reset
+            ,conversation_commands::conversation_create
+            ,conversation_commands::conversation_list
+            ,conversation_commands::conversation_load
             ,run_records::run_records_list
             ,run_records::run_records_load
             ,run_records::run_records_check_files
+            ,workflow_editor::workflow_editor_validate
+            ,workflow_editor::workflow_editor_load
+            ,workflow_editor::workflow_editor_save
+            ,workflow_editor::workflow_editor_run
+            ,workspace_browser::workspace_browser_list
+            ,workspace_browser::workspace_browser_text
+            ,workspace_browser::workspace_browser_audio
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

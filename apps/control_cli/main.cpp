@@ -17,14 +17,21 @@ int run(const std::vector<std::string>& arguments) {
             if (!seen.insert(key).second) throw ap::ExecutionError("invalid_arguments", "Duplicate host option");
             if (key == "--help") {
                 std::cout << "control-cli [--workspace <directory>] [--allow-devices] [--allow-monitor]\n"
+                    "  [--plugin-snapshot <host-file> --plugin-snapshot-sha256 <digest> --plugin-data <directory>]\n"
                     "One versioned JSON request per stdin line; one response per stdout line. EOF cancels and joins the active task.\n";
                 return 0;
             }
             if (key == "--workspace" && i + 1 < arguments.size()) policy.workspace = ap::path_from_utf8(arguments[++i]);
+            else if (key == "--plugin-snapshot" && i + 1 < arguments.size()) policy.plugin_snapshot_path = ap::path_from_utf8(arguments[++i]);
+            else if (key == "--plugin-snapshot-sha256" && i + 1 < arguments.size()) policy.plugin_snapshot_sha256 = arguments[++i];
+            else if (key == "--plugin-data" && i + 1 < arguments.size()) policy.plugin_data_root = ap::path_from_utf8(arguments[++i]);
             else if (key == "--allow-devices") policy.allow_devices = true;
             else if (key == "--allow-monitor") policy.allow_monitor = true;
             else throw ap::ExecutionError("invalid_arguments", "Unknown or incomplete host option: " + key);
         }
+        const bool has_plugins = !policy.plugin_snapshot_path.empty();
+        if (has_plugins != !policy.plugin_snapshot_sha256.empty() || has_plugins != !policy.plugin_data_root.empty())
+            throw ap::ExecutionError("invalid_arguments", "Plugin startup options must be provided together");
         ap::ControlProtocol protocol(std::move(policy));
         // 不用无限 getline：超过预算的行继续丢弃至换行，返回错误后仍接受下一条请求。
         std::string line;

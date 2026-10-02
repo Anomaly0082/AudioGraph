@@ -30,6 +30,19 @@
   text-align: left;
   padding: 0.9rem;
 }
+.run-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.run-row-actions .run-row {
+  flex: 1;
+  min-width: 0;
+}
+.run-stop {
+  flex: 0 0 auto;
+}
 .run-row > span {
   display: grid;
   gap: 0.4rem;
@@ -58,6 +71,19 @@
   min-width: 0;
   border-left: 1px solid #35445a;
   padding-left: 1.25rem;
+}
+.workspace-browser .panel {
+  min-width: 0;
+}
+.workspace-browser code {
+  overflow-wrap: anywhere;
+}
+.workspace-browser audio {
+  width: 100%;
+  max-width: 480px;
+}
+.workspace-browser .run-list {
+  margin: 1rem 0;
 }
 .run-detail h3 {
   margin-top: 0;

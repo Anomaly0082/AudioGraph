@@ -4,6 +4,7 @@
 #include "audioprocess/realtime_graph_executor.h"
 #include "audioprocess/task_runner.h"
 #include "audioprocess/wav_file.h"
+#include "audioprocess/plugin_host.h"
 #ifdef _WIN32
 #include "audioprocess/realtime_session.h"
 #endif
@@ -75,9 +76,11 @@ ControlPolicy normalize_policy(ControlPolicy policy) {
     return policy;
 }
 
-NodeRegistry control_registry() {
+NodeRegistry control_registry(const ControlPolicy& policy, std::string& plugin_report) {
     auto registry = create_prototype_node_registry();
     register_realtime_nodes(registry);
+    plugin_report = register_plugin_nodes(registry, PluginHostOptions{
+        policy.plugin_snapshot_path, policy.plugin_snapshot_sha256, policy.plugin_data_root, policy.workspace});
     return registry;
 }
 
@@ -189,7 +192,7 @@ void validate_control_paths(const GraphDefinition& graph, const ControlPolicy& p
 }
 
 ControlProtocol::ControlProtocol(ControlPolicy policy)
-    : policy_(normalize_policy(std::move(policy))), registry_(control_registry()),
+    : policy_(normalize_policy(std::move(policy))), registry_(control_registry(policy_, plugin_report_json_)),
       tasks_([this](const TaskRequest& request, std::atomic_bool& cancellation) {
           validate_control_paths(request.graph, policy_);
           return execute_task_request(request, registry_, cancellation);
@@ -208,6 +211,7 @@ std::string ControlProtocol::handle(std::string_view input) {
         if (operation == "capabilities" || operation == "nodes.list") {
             fields(request, {"schema_version", "id", "op"});
             data = Json::parse(node_catalog_json(registry_));
+            data["plugins"] = Json::parse(plugin_report_json_);
             if (operation == "capabilities") {
                 data["operations"] = {"capabilities", "nodes.list", "nodes.describe", "devices.list", "audio.inspect", "graph.validate",
                                       "tasks.start", "tasks.status", "tasks.cancel", "tasks.result", "tasks.release"};

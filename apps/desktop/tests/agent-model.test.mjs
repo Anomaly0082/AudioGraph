@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const {
   parseAgentReply,
   graphFromToolEvent,
+  workflowFromToolEvent,
 } = require("../../../build/desktop-model-tests/agent-model.js");
 const Panel =
   require("../../../build/desktop-model-tests/components/AgentToolsPanel.js").default;
@@ -103,9 +104,13 @@ test("agent reply must match exact request and bounded call counters", () => {
   };
   assert.equal(parseAgentReply(result, "r1"), result);
   assert.throws(() => parseAgentReply(result, "old"));
-  assert.throws(() => parseAgentReply({ ...result, tool_calls: 21 }, "r1"));
+  assert.doesNotThrow(() => parseAgentReply({ ...result, model_calls: 16, tool_calls: 40 }, "r1"));
+  assert.throws(() => parseAgentReply({ ...result, tool_calls: 41 }, "r1"));
+  assert.throws(() => parseAgentReply({ ...result, model_calls: 17 }, "r1"));
   assert.throws(() => parseAgentReply({ ...result, model_calls: -1 }, "r1"));
   assert.throws(() => parseAgentReply({ ...result, state: "running" }, "r1"));
+  assert.throws(() => parseAgentReply({ ...result, conversation_id: "wrong" }, "r1", "a".repeat(64)));
+  assert.throws(() => parseAgentReply({ ...result, run_ids: ["../outside"] }, "r1"));
 });
 test("only successful Graph text writes can be loaded into the editor", () => {
   const event = {
@@ -121,6 +126,25 @@ test("only successful Graph text writes can be loaded into the editor", () => {
     graphFromToolEvent({ ...event, arguments: { content: "plain text" } }),
     null,
   );
+});
+
+test("Workflow loader recognizes only complete successful configuration text without executing it", () => {
+  const text = JSON.stringify({schema_version:1,inputs:{},steps:[],outputs:{}});
+  const event = {kind:"tool",tool:"file_write_text",success:true,arguments:{path:"test.workflow.json",content:text}};
+  assert.equal(workflowFromToolEvent(event).text,text);
+  assert.match(workflowFromToolEvent(event).label,/test.workflow.json/);
+  assert.equal(workflowFromToolEvent({...event,success:false}),null);
+  assert.equal(workflowFromToolEvent({...event,omitted_bytes:20}),null);
+  assert.equal(workflowFromToolEvent({...event,arguments:{content:JSON.stringify(graph)}}),null);
+  assert.equal(workflowFromToolEvent({...event,tool:"file_read_text"}),null);
+  assert.equal(workflowFromToolEvent({...event,arguments:{content:"broken"}}),null);
+  assert.equal(workflowFromToolEvent({...event,arguments:{content:text+" ".repeat(65536)}}),null);
+  const View = require("../../../build/desktop-model-tests/components/ConversationTurnView.js").default;
+  const html = renderToStaticMarkup(React.createElement(View,{mode:"workflow",busy:false,blocked:false,stopping:false,
+    turn:{id:"r1",prompt:"创建配置",state:"completed",reply:{state:"completed",text:"已生成",events:[event],model_calls:1,tool_calls:1}},
+    onApplyGraph:()=>assert.fail("render cannot apply"),onApplyWorkflow:()=>assert.fail("render cannot apply")}));
+  assert.match(html,/载入 Workflow 编辑器/);
+  assert.doesNotMatch(html,/>运行 Workflow<\/button>/);
 });
 test("Graph and Workflow tool panels expose different execution boundaries", () => {
   const agent = {

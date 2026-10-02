@@ -202,7 +202,7 @@ pub(crate) fn catalog_nodes(response: &Value) -> Result<Vec<Value>, String> {
     for node in nodes {
         if !matches!(node.get("execution_domain").and_then(Value::as_str), Some("synchronous" | "streaming")) { continue; }
         let mut safe = serde_json::Map::new();
-        for field in ["typeId", "displayName", "description", "execution_domain", "inputs", "outputs", "parameters", "stream_role"] {
+        for field in ["typeId", "displayName", "description", "execution_domain", "inputs", "outputs", "parameters", "stream_role", "plugin"] {
             if let Some(value) = node.get(field) { safe.insert(field.into(), value.clone()); }
         }
         filtered.push(Value::Object(safe));

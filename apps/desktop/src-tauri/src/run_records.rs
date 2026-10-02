@@ -111,12 +111,12 @@ pub struct RunStore {
     active: Mutex<HashSet<(PathBuf, String)>>,
 }
 
-fn time_ms() -> Result<u64, String> {
+pub(crate) fn time_ms() -> Result<u64, String> {
     Ok(SystemTime::now().duration_since(UNIX_EPOCH)
         .map_err(|_| "System clock is before Unix epoch")?.as_millis() as u64)
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
@@ -130,7 +130,7 @@ fn is_link(meta: &Metadata) -> bool {
     false
 }
 
-fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
+pub(crate) fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -160,7 +160,7 @@ fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
     { let _ = (path, meta); true }
 }
 
-fn safe_metadata(path: &Path) -> Result<Option<Metadata>, String> {
+pub(crate) fn safe_metadata(path: &Path) -> Result<Option<Metadata>, String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if is_link(&meta) => Err("Links and reparse points are not allowed".into()),
         Ok(meta) => Ok(Some(meta)),
@@ -169,7 +169,7 @@ fn safe_metadata(path: &Path) -> Result<Option<Metadata>, String> {
     }
 }
 
-fn check_chain(path: &Path) -> Result<(), String> {
+pub(crate) fn check_chain(path: &Path) -> Result<(), String> {
     use std::path::Component;
     let mut current = PathBuf::new();
     for part in path.components() {
@@ -182,7 +182,7 @@ fn check_chain(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_dir(path: &Path) -> Result<(), String> {
+pub(crate) fn ensure_dir(path: &Path) -> Result<(), String> {
     check_chain(path)?;
     match safe_metadata(path)? {
         Some(meta) if meta.is_dir() => Ok(()),
@@ -195,7 +195,7 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
     }
 }
 
-fn overlaps(a: &Path, b: &Path) -> bool {
+pub(crate) fn overlaps(a: &Path, b: &Path) -> bool {
     #[cfg(windows)]
     {
         let lower = |p: &Path| p.to_string_lossy().to_lowercase();
@@ -237,7 +237,7 @@ fn record_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{id}.json")))
 }
 
-fn temp_file(dir: &Path) -> Result<(PathBuf, File), String> {
+pub(crate) fn temp_file(dir: &Path) -> Result<(PathBuf, File), String> {
     for _ in 0..32 {
         let serial = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = dir.join(format!(".run-tmp-{}-{serial}", std::process::id()));
@@ -251,7 +251,7 @@ fn temp_file(dir: &Path) -> Result<(PathBuf, File), String> {
 }
 
 #[cfg(windows)]
-fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "Kernel32")]
     unsafe extern "system" {
@@ -265,7 +265,7 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn create_file(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn create_file(from: &Path, to: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "Kernel32")]
     unsafe extern "system" {
@@ -280,12 +280,12 @@ fn create_file(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn create_file(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn create_file(from: &Path, to: &Path) -> Result<(), String> {
     fs::hard_link(from, to).map_err(|e| format!("Cannot create run record: {e}"))
 }
 
 #[cfg(not(windows))]
-fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
     fs::rename(from, to).map_err(|e| format!("Cannot replace run record: {e}"))
 }
 
@@ -365,7 +365,7 @@ fn valid_reference_path(path: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn opened_file_within_workspace(file: &File, root: &Path) -> bool {
+pub(crate) fn opened_file_within_workspace(file: &File, root: &Path) -> bool {
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
     struct FileInformation {
@@ -407,7 +407,7 @@ fn opened_file_within_workspace(file: &File, root: &Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn opened_file_within_workspace(file: &File, root: &Path) -> bool {
+pub(crate) fn opened_file_within_workspace(file: &File, root: &Path) -> bool {
     let _ = (file, root);
     true
 }

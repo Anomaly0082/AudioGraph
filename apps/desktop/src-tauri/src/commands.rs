@@ -21,16 +21,25 @@ fn warn(reply: &mut Value, message: String) {
 
 fn terminal(state: Option<&str>) -> bool { matches!(state,Some("succeeded" | "failed" | "cancelled")) }
 
+fn terminal_result(response: &Value, task_id: &str) -> bool {
+    let state = response.pointer("/data/state").and_then(Value::as_str);
+    response.get("success") == Some(&Value::Bool(true)) && terminal(state)
+        && response.pointer("/data/task_id").and_then(Value::as_str) == Some(task_id)
+        && (state != Some("succeeded") || response.pointer("/data/result").is_some_and(|result| !result.is_null()))
+}
+
 fn interrupt_session(store: &RunStore, tracker: &ManualRunTracker, app_data: &std::path::Path,
     session: &str, workspace: &std::path::Path, reason: &str) -> Vec<String> {
     let spaces = match ToolWorkspaces::new(workspace,app_data) { Ok(spaces) => spaces, Err(error) => return vec![error] };
-    let pending: Vec<_> = { let mut tasks = tracker.tasks.lock().unwrap();
-        let keys: Vec<_> = tasks.keys().filter(|(id,_)| id == session).cloned().collect();
-        keys.into_iter().filter_map(|key| tasks.remove(&key)).collect() };
+    let mut tasks = tracker.tasks.lock().unwrap();
+    let keys: Vec<_> = tasks.keys().filter(|(id,_)| id == session).cloned().collect();
     let mut warnings = Vec::new();
-    for run in pending {
-        if let Err(error) = store.finish(&spaces,app_data,&run.id,"interrupted",None,Some(reason.into()),run.outputs) {
-            warnings.push(format!("Cannot finish interrupted run record: {error}"));
+    for key in keys {
+        let run = tasks.get(&key).unwrap();
+        if let Err(error) = store.finish(&spaces,app_data,&run.id,"interrupted",None,Some(reason.into()),run.outputs.clone()) {
+            warnings.push(format!("中断任务的运行记录保存失败：{error}"));
+        } else {
+            tasks.remove(&key);
         }
     }
     warnings
@@ -38,40 +47,39 @@ fn interrupt_session(store: &RunStore, tracker: &ManualRunTracker, app_data: &st
 
 fn complete_manual(manager: &BackendManager, store: &RunStore, spaces: &ToolWorkspaces,
     app_data: &std::path::Path, tracker: &ManualRunTracker, session: &str, task_id: &str,
-    response: &mut Value) {
-    let mut missing_result = false;
-    let outcome = if response.pointer("/data/result").is_some() {
-        response.clone()
+    response: &mut Value, result_response: bool) -> bool {
+    let key = (session.to_owned(),task_id.to_owned());
+    // Do not query a result already persisted (or released). Never hold this lock
+    // during an RPC: a failed connection can synchronously interrupt its runs.
+    if !tracker.tasks.lock().unwrap().contains_key(&key) { return true; }
+    let outcome = if result_response && terminal_result(response,task_id) {
+        Ok(response.clone())
     } else {
         match manager.request(session,json!({"op":"tasks.result","task_id":task_id})) {
-            Ok(value) if value.get("success") == Some(&Value::Bool(true))
-                && terminal(value.pointer("/data/state").and_then(Value::as_str)) => value,
-            Ok(_) => {
-                warn(response,"Cannot retrieve a terminal tasks.result for run record".into());
-                missing_result = true;
-                response.clone()
-            }
-            Err(error) => {
-                warn(response,format!("Cannot retrieve final task result for run record: {error}"));
-                missing_result = true;
-                response.clone()
-            }
+            Ok(value) if terminal_result(&value,task_id) => Ok(value),
+            Ok(_) => Err("尚未取得任务结束后的完整结果，已保留任务，请重试收尾。".to_owned()),
+            Err(error) => Err(format!("未能取得任务结束后的完整结果，运行记录仍待保存：{error}")),
         }
     };
-    let observed_state = outcome.pointer("/data/state").and_then(Value::as_str).unwrap_or("unknown");
-    if !terminal(Some(observed_state)) { return; }
-    let state = if missing_result { "unknown" } else { observed_state }.to_owned();
-    let pending = tracker.tasks.lock().unwrap().get(&(session.to_owned(),task_id.to_owned())).map(|p| (p.id.clone(),p.outputs.clone()));
-    let Some(pending) = pending else { return; };
-    let mut outputs = pending.1;
+    // Another result/status/disconnect callback may have finished this run while
+    // the RPC was pending. Serialize the disk write with that second check.
+    let mut tasks = tracker.tasks.lock().unwrap();
+    let Some(pending) = tasks.get(&key) else { return true; };
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => { warn(response,error); return false; }
+    };
+    let state = outcome.pointer("/data/state").and_then(Value::as_str).unwrap().to_owned();
+    let mut outputs = pending.outputs.clone();
     outputs.extend(crate::agent_tools::typed_result_files(&outcome,"user"));
     let outputs = crate::agent_tools::normalize_file_drafts(spaces,outputs);
-    let error = if missing_result { Some("Terminal status observed, but tasks.result could not be retrieved".into()) }
-        else if state == "succeeded" { None } else { Some(outcome.pointer("/data/errors").cloned().unwrap_or(Value::Null).to_string()) };
-    if let Err(error) = store.finish(spaces,app_data,&pending.0,&state,Some(outcome),error,outputs) {
-        warn(response,format!("Cannot finish run record: {error}"));
+    let error = if state == "succeeded" { None } else { Some(outcome.pointer("/data/errors").cloned().unwrap_or(Value::Null).to_string()) };
+    if let Err(error) = store.finish(spaces,app_data,&pending.id,&state,Some(outcome),error,outputs) {
+        warn(response,format!("运行记录保存失败：{error}"));
+        false
     } else {
-        tracker.tasks.lock().unwrap().remove(&(session.to_owned(),task_id.to_owned()));
+        tasks.remove(&key);
+        true
     }
 }
 
@@ -143,8 +151,11 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
             let files = crate::agent_tools::normalize_file_drafts(&spaces,
                 crate::agent_tools::graph_file_refs(&request["graph"],&catalog,"user"));
             let (outputs,inputs): (Vec<_>,Vec<_>) = files.into_iter().partition(|file| file.role == "output");
+            let mut configuration = request.clone();
+            let plugins = crate::agent_tools::graph_plugin_refs(&request["graph"],&catalog);
+            if plugins.as_array().is_some_and(|values| !values.is_empty()) { configuration["node_plugins"] = plugins; }
             let started = store.begin(&spaces,&app_data,RunDraft { kind:"graph".into(), origin:"manual".into(),
-                parent_id:None,name:"Graph run".into(),configuration:request.clone(),files:inputs });
+                parent_id:None,name:"Graph run".into(),configuration,files:inputs });
             let record = started.map_err(|error| format!("Cannot begin run record; task was not started: {error}"))?;
             let mut reply = match manager.request(&session_id,request) {
                 Ok(reply) => reply,
@@ -156,6 +167,9 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
             {
                     let task_id = reply.pointer("/data/task_id").and_then(Value::as_str).map(str::to_owned);
                     if reply.get("success") == Some(&Value::Bool(true)) {
+                        if let Some(data) = reply.get_mut("data").and_then(Value::as_object_mut) {
+                            data.insert("run_id".into(),json!(record.id));
+                        }
                         if let Some(task_id) = task_id {
                             tracker.tasks.lock().unwrap().insert((session_id.to_owned(),task_id.clone()),PendingRun { id:record.id,outputs });
                             if manager.workspace(session_id).is_err() {
@@ -163,7 +177,7 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
                                 for warning in warnings { warn(&mut reply,warning); }
                             }
                             if terminal(reply.pointer("/data/state").and_then(Value::as_str)) {
-                                complete_manual(&manager,&store,&spaces,&app_data,&tracker,&session_id,&task_id,&mut reply);
+                                complete_manual(&manager,&store,&spaces,&app_data,&tracker,&session_id,&task_id,&mut reply,false);
                             }
                         } else if let Err(error) = store.finish(&spaces,&app_data,&record.id,"interrupted",Some(reply.clone()),Some("Task start omitted task_id".into()),outputs) {
                             warn(&mut reply,format!("Cannot finish run record: {error}"));
@@ -177,19 +191,21 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
             return Ok(reply);
         }
         let task_id = request.get("task_id").and_then(Value::as_str).unwrap_or("").to_owned();
-        let tracked = tracker.tasks.lock().unwrap().contains_key(&(session_id.to_owned(),task_id.clone()));
-        let mut release_warnings = Vec::new();
-        if op == "tasks.release" && tracked {
-            if let Ok(mut outcome) = manager.request(&session_id,json!({"op":"tasks.result","task_id":task_id})) {
-                complete_manual(&manager,&store,&spaces,&app_data,&tracker,&session_id,&task_id,&mut outcome);
-                release_warnings = outcome.get("record_warnings").and_then(Value::as_array)
-                    .into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
+        if op == "tasks.release" {
+            let mut recording = json!({});
+            if !complete_manual(manager,store,&spaces,app_data,tracker,session_id,&task_id,&mut recording,false) {
+                recording["success"] = json!(false);
+                recording["errors"] = json!([{"code":"run_record_finalize_failed",
+                    "message":"运行结果尚未保存，暂未完成收尾，请重试。"}]);
+                return Ok(recording);
             }
+            // Persistence must succeed before releasing the backend's only copy.
+            // A release reply has no result and must never trigger another fetch.
+            return manager.request(session_id,request);
         }
         let mut reply = manager.request(&session_id,request)?;
-        for warning in release_warnings { warn(&mut reply,warning); }
-        if terminal(reply.pointer("/data/state").and_then(Value::as_str)) || op == "tasks.release" {
-            complete_manual(&manager,&store,&spaces,&app_data,&tracker,&session_id,&task_id,&mut reply);
+        if terminal(reply.pointer("/data/state").and_then(Value::as_str)) {
+            complete_manual(&manager,&store,&spaces,&app_data,&tracker,&session_id,&task_id,&mut reply,op == "tasks.result");
         }
         Ok(reply)
 }

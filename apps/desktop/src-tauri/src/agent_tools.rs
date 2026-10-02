@@ -1,5 +1,6 @@
 use crate::backend::BackendManager;
 use crate::run_records::{RunDraft, RunFileDraft, RunStore};
+use crate::run_history_tools;
 use crate::tool_workspaces::ToolWorkspaces;
 use crate::workflow::{self, WorkflowHost};
 use serde_json::{json, Value};
@@ -19,8 +20,9 @@ pub(crate) fn valid_mode(mode: &str) -> bool { matches!(mode, "graph" | "workflo
 pub(crate) fn names(mode: &str) -> Vec<String> {
     if !valid_mode(mode) { return Vec::new(); }
     let mut names = vec!["workspace_list", "file_read_text", "file_write_text", "file_delete",
-        "file_copy_to_ai", "file_export", "audio_inspect", "nodes_list", "graph_validate"];
+        "file_copy_to_ai", "file_export", "directory_create", "audio_inspect", "nodes_list", "graph_validate"];
     if mode == "workflow" { names.extend(["graph_run", "workflow_validate", "workflow_run"]); }
+    names.extend(run_history_tools::NAMES.iter().copied());
     names.into_iter().map(str::to_owned).collect()
 }
 
@@ -36,12 +38,15 @@ pub(crate) fn definitions(mode: &str) -> Vec<Value> {
     let execution = schema(json!({"graph":graph,"mode":{"type":"string","enum":["offline","streaming"]},"options":{"type":"object"}}), &["graph","mode"]);
     let validation = schema(json!({"space":space,"graph":{"type":"object"},"mode":{"type":"string","enum":["offline","streaming"]},"options":{"type":"object"}}), &["space","graph","mode"]);
     let rows: Vec<(&str,&str,Value)> = vec![
-        ("workspace_list","List files in one workspace.",schema(json!({"space":space,"path":path}), &["space"])),
+        ("workspace_list","List one workspace directory in stable name order. offset defaults to 0 and limit to 100 (maximum 200). Entries also have a 16 KiB page byte budget, so a page may be shorter than limit with page_byte_limited=true. Follow next_offset, which advances by actual returned entries, for later pages; truncated means more entries may remain after this page. A scan is bounded to 10000 entries or 2 seconds: partial=true makes total unknown and pages cover only the scanned subset.",schema(json!({"space":space,"path":path,
+            "offset":{"type":"integer","minimum":0,"maximum":10000},
+            "limit":{"type":"integer","minimum":1,"maximum":200}}), &["space"])),
         ("file_read_text","Read up to 64 KiB of UTF-8 text.",schema(json!({"space":space,"path":path}), &["space","path"])),
         ("file_write_text","Write UTF-8 text in the AI workspace only.",schema(json!({"path":path,"content":{"type":"string"}}), &["path","content"])),
         ("file_delete","Delete a file in the AI workspace only.",schema(json!({"path":path}), &["path"])),
         ("file_copy_to_ai","Copy a user or AI file into the AI workspace.",schema(json!({"source_space":space,"source_path":path,"path":path}), &["source_space","source_path","path"])),
-        ("file_export","Create a new user workspace file from an AI workspace file.",schema(json!({"path":path,"user_path":path}), &["path","user_path"])),
+        ("file_export","Copy one AI file to a NEW user file, never overwrite. Prefer one fresh output folder per batch and reuse it for that batch's files. user_path='batch-name/output.wav' safely creates the single top-level folder if missing; deeper missing directories are not created. This is not recursive directory export.",schema(json!({"path":path,"user_path":path}), &["path","user_path"])),
+        ("directory_create","Create a directory in the AI workspace ONLY, including missing parents, at most 3 levels below its root (a/b/c). Existing normal directories succeed with created=false. No user-workspace directory access. The same depth limit applies to file_write_text and file_copy_to_ai parent creation.",schema(json!({"path":path}), &["path"])),
         ("audio_inspect","Return PCM16 WAV metadata without audio samples.",schema(json!({"space":space,"path":path}), &["space","path"])),
         ("nodes_list","List available offline and streaming audio nodes.",schema(json!({}), &[])),
         ("graph_validate","Validate a graph whose file paths are relative to the selected workspace.",validation),
@@ -49,8 +54,10 @@ pub(crate) fn definitions(mode: &str) -> Vec<Value> {
         ("workflow_validate","Read a workflow JSON file (64 KiB maximum) and validate its structure without running steps. Workflow v1 uses schema_version:1, inputs:{}, steps:[{id,type}], outputs:{}; steps are set, call, for_each, or if. References use {$ref:\"/inputs/name\"} or earlier /steps/id paths.",schema(json!({"space":space,"path":path}), &["space","path"])),
         ("workflow_run","Run a validated workflow JSON file. inputs overrides only declared input keys. Calls use the existing basic tools; a failed step returns a partial report.",schema(json!({"space":space,"path":path,"inputs":{"type":"object"}}), &["space","path"])),
     ];
-    rows.into_iter().filter(|(name,_,_)| mode == "workflow" || !matches!(*name, "graph_run" | "workflow_validate" | "workflow_run"))
-        .map(|(name,description,parameters)| json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})).collect()
+    let mut definitions: Vec<Value> = rows.into_iter().filter(|(name,_,_)| mode == "workflow" || !matches!(*name, "graph_run" | "workflow_validate" | "workflow_run"))
+        .map(|(name,description,parameters)| json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})).collect();
+    definitions.extend(run_history_tools::definitions());
+    definitions
 }
 
 fn arg<'a>(args: &'a Value, key: &str) -> Result<&'a str,String> {
@@ -74,6 +81,27 @@ fn ensure_success(reply: Value) -> Result<Value,String> {
     } else {
         Err(format!("Backend rejected operation: {}", reply.get("errors").cloned().unwrap_or(Value::Null)))
     }
+}
+
+// Record only the origins actually used by this graph, not private plugin paths
+// or a caller-supplied claim. Catalog metadata comes from the connected engine.
+pub(crate) fn graph_plugin_refs(graph: &Value, catalog: &Value) -> Value {
+    let definitions = catalog.get("nodes").or_else(|| catalog.pointer("/data/nodes"))
+        .and_then(Value::as_array);
+    let mut refs = Vec::new();
+    if let (Some(nodes),Some(definitions)) = (graph.get("nodes").and_then(Value::as_array),definitions) {
+        for node in nodes {
+            if let Some(origin) = definitions.iter().find(|d| d["typeId"] == node["type"])
+                .and_then(|d| d.get("plugin")).filter(|p| p.is_object()) {
+                let mut provenance = serde_json::Map::new();
+                for field in ["id","implementation_version","package_sha256","abi","capabilities"] {
+                    if let Some(value) = origin.get(field) { provenance.insert(field.into(),value.clone()); }
+                }
+                refs.push(json!({"node_id":node["id"],"type_id":node["type"],"plugin":provenance}));
+            }
+        }
+    }
+    json!(refs)
 }
 
 pub(crate) fn graph_file_refs(graph: &Value, catalog: &Value, space: &str) -> Vec<RunFileDraft> {
@@ -166,6 +194,7 @@ fn attach_workflow_source(mut report: Value, source: Value) -> Value {
         "steps_executed":report.get("steps_executed").cloned().unwrap_or(json!(0)),
         "tool_calls":report.get("tool_calls").cloned().unwrap_or(json!(0)),
         "graph_runs":report.get("graph_runs").cloned().unwrap_or(json!(0)),
+        "run_id":report.get("run_id").cloned().unwrap_or(Value::Null),
         "error":{"code":"result_limit","message":"Workflow report exceeds 1 MiB with source metadata; step results and trace cannot be included","step_path":""},
         "source":source
     })
@@ -186,6 +215,7 @@ pub(crate) struct ToolContext {
     workflow_parent: Option<String>,
     workflow_step: Option<String>,
     workflow_outputs: Vec<RunFileDraft>,
+    origin: &'static str,
 }
 
 impl Drop for ToolContext {
@@ -203,7 +233,12 @@ impl Drop for ToolContext {
 
 impl ToolContext {
     pub fn new(spaces: ToolWorkspaces, shared: Arc<BackendManager>, shared_session: String) -> Self {
-        Self { spaces, shared, shared_session, owned: None, cleanup_failure: None, record: None, workflow_parent: None, workflow_step: None, workflow_outputs: Vec::new() }
+        Self { spaces, shared, shared_session, owned: None, cleanup_failure: None, record: None, workflow_parent: None, workflow_step: None, workflow_outputs: Vec::new(), origin: "ai" }
+    }
+
+    pub fn with_manual_origin(mut self) -> Self {
+        self.origin = "manual";
+        self
     }
 
     pub fn with_records(mut self, store: Arc<RunStore>, app_data: PathBuf) -> Self {
@@ -236,7 +271,7 @@ impl ToolContext {
             if pair.1.is_empty() { return Err("AI backend connection is still starting".into()); }
             return Ok(pair.clone());
         }
-        let manager = Arc::new(BackendManager::default());
+        let manager = Arc::new(self.shared.related_manager());
         let path = self.spaces.ai_root.to_string_lossy().into_owned();
         let connect_manager = manager.clone();
         // Register ownership before the blocking spawn. If this future is dropped while
@@ -260,7 +295,7 @@ impl ToolContext {
         } else { Ok(()) }
     }
 
-    async fn graph_args(&mut self, name: &str, args: &Value) -> Result<(Value,String,Value,String,Vec<RunFileDraft>),String> {
+    async fn graph_args(&mut self, name: &str, args: &Value) -> Result<(Value,String,Value,String,Vec<RunFileDraft>,Value),String> {
         if name == "graph_validate" { fields(args, &["space","graph","mode"], &["options"])?; }
         else { fields(args, &["graph","mode"], &["options"])?; }
         let space = if name == "graph_validate" { arg(args,"space")? } else { "ai" };
@@ -302,12 +337,25 @@ impl ToolContext {
             }
         }
         let files = normalize_file_drafts(&self.spaces,graph_file_refs(&graph,&catalog,space));
-        Ok((graph, mode.to_owned(), options, space.to_owned(), files))
+        let plugins = graph_plugin_refs(&graph,&catalog);
+        Ok((graph, mode.to_owned(), options, space.to_owned(), files, plugins))
     }
 
     pub async fn dispatch(&mut self, mode: &str, name: &str, args: &Value, cancel: &AtomicBool) -> Result<Value,String> {
         if !valid_mode(mode) || !names(mode).iter().any(|allowed| allowed == name) { return Err("Tool is not available in this mode".into()); }
         if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
+        if run_history_tools::NAMES.contains(&name) {
+            let (store, app_data) = self.record.clone().ok_or("Run history is unavailable for this session")?;
+            let spaces = self.spaces.clone();
+            let name = name.to_owned();
+            let args = args.clone();
+            // Await bounded reads/hashing even on cancellation; never detach file-check work.
+            let outcome = tauri::async_runtime::spawn_blocking(move ||
+                run_history_tools::dispatch(&store, &spaces, &app_data, &name, &args))
+                .await.map_err(|_| "Run history query failed".to_owned())?;
+            if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
+            return outcome;
+        }
         if matches!(name, "workflow_validate" | "workflow_run") {
             return self.dispatch_workflow(name,args,cancel).await;
         }
@@ -336,17 +384,23 @@ impl ToolContext {
             report.as_object_mut().ok_or("Workflow validation report must be an object")?.insert("source".into(),source);
             return Ok(report);
         }
+        self.execute_workflow_snapshot(program,document,source,arg(args,"path")?,args.get("inputs"),
+            vec![RunFileDraft { space:arg(args,"space")?.into(),path:arg(args,"path")?.into(),role:"input".into() }],cancel).await
+    }
+
+    pub(crate) async fn execute_workflow_snapshot(&mut self, program: workflow::Workflow,
+        document: Value, source: Value, name: &str, inputs: Option<&Value>,
+        files: Vec<RunFileDraft>, cancel: &AtomicBool) -> Result<Value,String> {
         let record = self.record.as_ref().map(|(store,app_data)| {
-            store.begin(&self.spaces,app_data,RunDraft { kind:"workflow".into(),origin:"ai".into(),
-                parent_id:None,name:arg(args,"path").unwrap_or("Workflow run").into(),
-                configuration:json!({"workflow":document,"inputs_override":args.get("inputs").cloned().unwrap_or_else(||json!({})),"source":source}),
-                files:vec![RunFileDraft { space:arg(args,"space").unwrap_or("ai").into(),path:arg(args,"path").unwrap_or("").into(),role:"input".into() }] })
+            store.begin(&self.spaces,app_data,RunDraft { kind:"workflow".into(),origin:self.origin.into(),
+                parent_id:None,name:name.into(),
+                configuration:json!({"workflow":document,"inputs_override":inputs.cloned().unwrap_or_else(||json!({})),"source":source,"file_space":"ai"}),
+                files })
         });
         let mut warning = None;
         let record_id = match record { Some(Ok(record)) => Some(record.id), Some(Err(error)) => return Err(format!("Cannot begin workflow record; workflow was not started: {error}")), None => None };
         self.workflow_parent = record_id.clone();
         self.workflow_outputs.clear();
-        let inputs = args.get("inputs");
         let mut report = serde_json::to_value(workflow::run(&program,inputs,self,cancel).await)
             .unwrap_or_else(|error| json!({"state":"failed","error":{"code":"report_encoding","message":error.to_string()}}));
         // A workflow may have started the private audio backend. Confirm process exit before
@@ -357,6 +411,7 @@ impl ToolContext {
             report["error"] = json!({"code":"backend_cleanup_failed","message":error,"step_path":null});
         }
         self.workflow_parent = None;
+        if let Some(id) = &record_id { report["run_id"] = json!(id); }
         let mut report = attach_workflow_source(report,source);
         if let (Some((store,app_data)),Some(id)) = (&self.record,&record_id) {
             let state = report.get("state").and_then(Value::as_str).unwrap_or("unknown");
@@ -374,11 +429,12 @@ impl ToolContext {
 
     async fn dispatch_basic(&mut self, mode: &str, name: &str, args: &Value, cancel: &AtomicBool, workflow_deadline: Option<Instant>) -> Result<Value,String> {
         if !valid_mode(mode) || !names(mode).iter().any(|allowed| allowed == name)
-            || matches!(name, "workflow_validate" | "workflow_run") { return Err("Tool is not available in this mode".into()); }
+            || matches!(name, "workflow_validate" | "workflow_run")
+            || run_history_tools::NAMES.contains(&name) { return Err("Tool is not available in this mode".into()); }
         if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
         if workflow_deadline.is_some_and(|deadline| Instant::now() >= deadline) { return Err("Workflow deadline exceeded".into()); }
         match name {
-            "workspace_list" => { fields(args,&["space"],&["path"])?; self.spaces.dispatch(name,args) }
+            "workspace_list" => { fields(args,&["space"],&["path","offset","limit"])?; self.spaces.dispatch(name,args) }
             "file_read_text" | "audio_inspect" => {
                 fields(args,&["space","path"],&[])?;
                 if name == "file_read_text" { return self.spaces.dispatch(name,args); }
@@ -390,6 +446,7 @@ impl ToolContext {
                 if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
                 ensure_success(request(manager,session,json!({"op":"audio.inspect","path":path})).await?)
             }
+            "directory_create" => { fields(args,&["path"],&[])?; self.spaces.dispatch(name,args) }
             "file_write_text" => { fields(args,&["path","content"],&[])?; self.spaces.dispatch(name,args) }
             "file_delete" => { fields(args,&["path"],&[])?; self.spaces.dispatch(name,args) }
             "file_copy_to_ai" => { fields(args,&["source_space","source_path","path"],&[])?; self.spaces.dispatch(name,args) }
@@ -407,7 +464,7 @@ impl ToolContext {
                 let mut record_result = None;
                 let mut record_warning_text = None;
                 let outcome: Result<Value,String> = async {
-                let (graph, execution_mode, options, space, files) = self.graph_args(name,args).await?;
+                let (graph, execution_mode, options, space, files, plugins) = self.graph_args(name,args).await?;
                 if Instant::now() >= deadline { return Err("Graph task exceeded its deadline".into()); }
                 if space == "ai" { self.spaces.check_quota()?; }
                 if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
@@ -418,9 +475,11 @@ impl ToolContext {
                     let (outputs,inputs): (Vec<_>,Vec<_>) = files.into_iter().partition(|file| file.role == "output");
                     record_outputs = outputs;
                     if let Some((store,app_data)) = &self.record {
-                        match store.begin(&self.spaces,app_data,RunDraft { kind:"graph".into(),origin:"ai".into(),
+                        let mut configuration = json!({"mode":execution_mode,"graph":graph,"options":options,"workflow_step_path":self.workflow_step,"file_space":space});
+                        if plugins.as_array().is_some_and(|values| !values.is_empty()) { configuration["node_plugins"] = plugins; }
+                        match store.begin(&self.spaces,app_data,RunDraft { kind:"graph".into(),origin:self.origin.into(),
                             parent_id:self.workflow_parent.clone(),name:self.workflow_step.clone().unwrap_or_else(||"Graph run".into()),
-                            configuration:json!({"mode":execution_mode,"graph":graph,"options":options,"workflow_step_path":self.workflow_step}),files:inputs }) {
+                            configuration,files:inputs }) {
                             Ok(record) => record_id = Some(record.id),
                             Err(error) => return Err(format!("Cannot begin graph record; graph was not started: {error}")),
                         }
@@ -481,6 +540,10 @@ impl ToolContext {
                         let outputs = normalize_file_drafts(&self.spaces,outputs);
                         if let Err(error) = store.finish(&self.spaces,app_data,id,state,value,error,outputs) {
                             record_warning_text = Some(format!("Cannot finish graph record: {error}"));
+                        }
+                        match &mut outcome {
+                            Ok(value) => { value["run_id"] = json!(id); },
+                            Err(error) => error.push_str(&format!("; run_id={id}")),
                         }
                     }
                     if let Some(warning) = record_warning_text {

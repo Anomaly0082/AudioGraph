@@ -23,6 +23,8 @@ type Props = {
   agentBlocked: boolean;
   onAgentSend: () => void;
   onAgentApply: (graph: GraphDocument) => void;
+  onOpenRun?: (id: string) => void;
+  onWorkflowApply?: (text: string, label: string) => void;
 };
 
 export default function WorkbenchPage({
@@ -37,6 +39,8 @@ export default function WorkbenchPage({
   agentBlocked,
   onAgentSend,
   onAgentApply,
+  onOpenRun,
+  onWorkflowApply,
 }: Props) {
   return (
     <div className="page-stack">
@@ -80,6 +84,8 @@ export default function WorkbenchPage({
           onSend={onAgentSend}
           onApplyGraph={onAgentApply}
           onSettings={onOpenSettings}
+          onOpenRun={onOpenRun}
+          onApplyWorkflow={onWorkflowApply}
         />
       ) : (
         <section className="panel preset-panel" aria-labelledby="preset-title">

@@ -13,6 +13,10 @@ struct ControlPolicy {
     std::filesystem::path workspace;
     bool allow_devices{false};
     bool allow_monitor{false};
+    // Host-only startup options; never accepted from a Graph or JSON request.
+    std::filesystem::path plugin_snapshot_path;
+    std::string plugin_snapshot_sha256;
+    std::filesystem::path plugin_data_root;
 };
 
 // 只检查声明为 FilePath 的参数；在启动前和 worker 执行前重复检查。
@@ -26,6 +30,7 @@ public:
     [[nodiscard]] std::string handle(std::string_view request);
 private:
     ControlPolicy policy_;
+    std::string plugin_report_json_;
     NodeRegistry registry_;
     TaskService tasks_;
 };

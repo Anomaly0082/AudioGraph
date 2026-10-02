@@ -65,6 +65,16 @@ struct ParameterDescriptor {
     bool integer_only{false};
 };
 
+// Provenance is metadata, not a dependency on the plugin implementation or ABI.
+struct PluginOrigin {
+    std::string plugin_id;
+    std::string plugin_version;
+    std::string package_sha256;
+    std::uint32_t abi_major{0};
+    std::uint32_t abi_minor{1};
+    friend bool operator==(const PluginOrigin&, const PluginOrigin&) = default;
+};
+
 struct NodeDescriptor {
     std::string type_id;
     std::string display_name;
@@ -76,6 +86,7 @@ struct NodeDescriptor {
     StreamRole stream_role{StreamRole::None};
     RealtimeRole realtime_role{RealtimeRole::None};
     std::optional<RealtimeCapabilities> realtime_capabilities;
+    std::optional<PluginOrigin> plugin;
 };
 
 struct ExecutionContext {

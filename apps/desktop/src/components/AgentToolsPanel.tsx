@@ -1,27 +1,23 @@
-import { graphFromToolEvent } from "../agent-model";
 import type { AgentTools } from "../hooks/useAgentTools";
 import type { GraphDocument } from "../model";
 import Disclosure from "./Disclosure";
-import AssistantMarkdown from "./AssistantMarkdown";
-
-const stateLabels = {
-  completed: "已结束",
-  cancelled: "已停止",
-  limited: "达到上限",
-  failed: "失败",
-};
+import ConversationTurnView from "./ConversationTurnView";
 export default function AgentToolsPanel({
   agent,
   blocked,
   onSend,
   onApplyGraph,
   onSettings,
+  onOpenRun,
+  onApplyWorkflow,
 }: {
   agent: AgentTools;
   blocked: boolean;
   onSend: () => void;
   onApplyGraph: (graph: GraphDocument) => void;
   onSettings: () => void;
+  onOpenRun?: (id: string) => void;
+  onApplyWorkflow?: (text: string, label: string) => void;
 }) {
   return (
     <section
@@ -39,7 +35,7 @@ export default function AgentToolsPanel({
           模式
           <select
             value={agent.mode}
-            disabled={agent.busy}
+            disabled={agent.busy || agent.loading}
             onChange={(event) =>
               agent.setMode(event.target.value as "graph" | "workflow")
             }
@@ -48,11 +44,32 @@ export default function AgentToolsPanel({
             <option value="workflow">Workflow · 工具执行</option>
           </select>
         </label>
+        <label className="conversation-picker">
+          会话
+          <select
+            aria-label="选择AI会话"
+            value={agent.conversationId ?? ""}
+            disabled={agent.busy || agent.loading || !agent.spaces}
+            onChange={(event) =>
+              void agent.selectConversation(event.target.value)
+            }
+          >
+            {!agent.conversationId && (
+              <option value="">新会话（发送后保存）</option>
+            )}
+            {(agent.conversations ?? []).map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.mode === "graph" ? "Graph" : "Workflow"} ·{" "}
+                {item.title === "New conversation" ? "新会话" : item.title}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
-          disabled={agent.busy || blocked || !agent.spaces}
-          onClick={() => void agent.reset()}
+          disabled={agent.busy || agent.loading || !agent.spaces}
+          onClick={() => void agent.newConversation()}
         >
-          清空对话
+          新建会话
         </button>
       </div>
       <p className="hint">
@@ -82,95 +99,32 @@ export default function AgentToolsPanel({
           {agent.error}
         </p>
       )}
+      {(agent.warnings ?? []).map((warning, index) => (
+        <p key={index} className="inline-error" role="status">
+          {warning}
+        </p>
+      ))}
+      {agent.hasOlder && (
+        <button
+          disabled={agent.busy || agent.loading}
+          onClick={() => void agent.loadOlder()}
+        >
+          查看更早消息
+        </button>
+      )}
       <div className="agent-conversation" aria-live="polite">
         {agent.turns.map((turn) => (
-          <article className="agent-turn" key={turn.id}>
-            <div className="agent-user">
-              <small>你</small>
-              <p>{turn.prompt}</p>
-            </div>
-            {turn.reply ? (
-              <div className="agent-answer">
-                <div className="row agent-answer-heading">
-                  <strong>AI</strong>
-                  <span className="badge">{stateLabels[turn.reply.state]}</span>
-                </div>
-                <AssistantMarkdown
-                  text={turn.reply.text || "本轮没有文字回复，请查看工具结果。"}
-                />
-                <small>
-                  {turn.reply.model_calls} 次模型请求 · {turn.reply.tool_calls}{" "}
-                  次工具调用
-                </small>
-                {turn.reply.events.some(
-                  (event) => event.kind === "tool" && event.success === false,
-                ) && (
-                  <p className="inline-error" role="status">
-                    本轮有工具调用失败，可查看调用详情。
-                  </p>
-                )}
-                {agent.mode === "graph" &&
-                  turn.reply.events.map((event, index) => {
-                    const graph = graphFromToolEvent(event);
-                    if (!graph) return null;
-                    const path = (event.arguments as { path?: unknown })?.path;
-                    return (
-                      <div className="agent-graph-action" key={index}>
-                        {typeof path === "string" && <code>{path}</code>}
-                        <button
-                          disabled={agent.busy || blocked}
-                          onClick={() => onApplyGraph(graph)}
-                        >
-                          载入 Graph 编辑器
-                        </button>
-                      </div>
-                    );
-                  })}
-                {turn.reply.events.length > 0 && (
-                  <Disclosure label="调用详情" className="agent-call-details">
-                    {turn.reply.events.map((event, index) => (
-                      <Disclosure
-                        key={index}
-                        className="agent-event"
-                        label={
-                          event.kind === "tool"
-                            ? `${event.tool} · ${event.success ? "成功" : "失败"}`
-                            : event.kind === "input"
-                              ? "本轮需求与配置"
-                              : event.kind === "assistant"
-                                ? "模型输出"
-                                : "状态"
-                        }
-                      >
-                        {event.text && <pre>{event.text}</pre>}
-                        {event.arguments !== undefined && (
-                          <>
-                            <small>工具参数</small>
-                            <pre>
-                              {JSON.stringify(event.arguments, null, 2)}
-                            </pre>
-                          </>
-                        )}
-                        {event.result !== undefined && (
-                          <>
-                            <small>执行结果</small>
-                            <pre>{JSON.stringify(event.result, null, 2)}</pre>
-                          </>
-                        )}
-                      </Disclosure>
-                    ))}
-                  </Disclosure>
-                )}
-              </div>
-            ) : (
-              <p className={turn.error ? "inline-error" : "hint"}>
-                {turn.error ||
-                  (agent.stopping
-                    ? "正在停止并等待工具清理…"
-                    : "正在调用模型或工具…")}
-              </p>
-            )}
-          </article>
+          <ConversationTurnView
+            key={turn.id}
+            turn={turn}
+            mode={agent.mode}
+            busy={agent.busy}
+            blocked={blocked}
+            stopping={agent.stopping}
+            onApplyGraph={onApplyGraph}
+            onOpenRun={onOpenRun}
+            onApplyWorkflow={onApplyWorkflow}
+          />
         ))}
       </div>
       <label className="checkbox-label">
@@ -221,7 +175,7 @@ export default function AgentToolsPanel({
         )}
       </div>
       <p className="hint">
-        读取的文本和工具结果会进入模型上下文；不发送音频样本。每轮最多8次模型请求、20次工具调用。
+        查询到的历史配置、文本和工具结果会发送给模型。内置音频检查不上传音频；第三方插件可能联网处理音频。每轮最多16次模型请求、40次工具调用。
       </p>
     </section>
   );

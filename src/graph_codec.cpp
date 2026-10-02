@@ -118,6 +118,13 @@ Json descriptor_json(const NodeDescriptor& node) {
     case RealtimeRole::Sink: realtime_role = "sink"; break;
     }
     result["realtime_role"] = realtime_role;
+    if (node.plugin) {
+        const auto& plugin = *node.plugin;
+        result["plugin"] = {{"id", plugin.plugin_id}, {"implementation_version", plugin.plugin_version},
+            {"package_sha256", plugin.package_sha256},
+            {"abi", {{"major", plugin.abi_major}, {"minor", plugin.abi_minor}}},
+            {"capabilities", Json::array({{{"id", "ag.whole_sync/1"}, {"version", 1}}})}};
+    }
     if (node.realtime_capabilities) {
         const auto& capability = *node.realtime_capabilities;
         result["realtime_capabilities"] = {

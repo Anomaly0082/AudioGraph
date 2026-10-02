@@ -5,6 +5,13 @@ export type NodeInfo = {
   displayName: string;
   description?: string;
   execution_domain: string;
+  plugin?: {
+    id: string;
+    implementation_version: string;
+    package_sha256: string;
+    abi: { major: number; minor: number };
+    capabilities: { id: string; version: number }[];
+  };
   inputs: { id: string; type: string; required?: boolean }[];
   outputs: { id: string; type: string; required?: boolean }[];
   realtime_capabilities?: {
@@ -37,7 +44,19 @@ export type Connection = {
   allowDevices: boolean;
   allowMonitor: boolean;
   previousForcedDisconnect?: boolean;
-  capabilities: { nodes: NodeInfo[] };
+  capabilities: {
+    nodes: NodeInfo[];
+    plugin_directory?: string;
+    plugins?: {
+      snapshot_id: string;
+      available: {
+        plugin_id: string;
+        plugin_version: string;
+        package_sha256: string;
+      }[];
+      errors: { package: string; code: string; message: string }[];
+    };
+  };
 };
 export type Device = { id: string; name: string; is_default: boolean };
 export type DeviceCatalog = { inputs: Device[]; outputs: Device[] };
@@ -54,10 +73,15 @@ export type GraphSubmission = {
 };
 export type TaskView = {
   id: string;
+  runId?: string;
   sessionId: string;
   state: TaskState | "unknown";
   errors?: unknown[];
   result?: unknown;
+  resultRead?: boolean;
+  released?: boolean;
+  cleanupBusy?: boolean;
+  cleanupError?: string;
   submission: GraphSubmission;
 };
 export type DisconnectedEvent = {

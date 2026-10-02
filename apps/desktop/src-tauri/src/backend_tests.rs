@@ -58,6 +58,53 @@ fn invalid_responses_do_not_consume_pending_requests() {
 }
 
 #[test]
+fn related_managers_share_one_immutable_plugin_selection_and_initialization_error() {
+    let empty = BackendManager::default();
+    let related = empty.related_manager();
+    assert!(Arc::ptr_eq(&empty.plugin_snapshot().unwrap(),&related.plugin_snapshot().unwrap()));
+    assert!(empty.plugin_snapshot().unwrap().launch_for(Path::new("unused-default-workspace")).unwrap().is_none());
+    let failed = BackendManager::default();
+    assert!(failed.configure_plugin_snapshot(Err("test metadata capture failed".into())).is_err());
+    assert!(failed.related_manager().plugin_snapshot().unwrap_err().contains("test metadata capture failed"));
+    assert!(failed.configure_plugin_snapshot(Ok(Arc::new(PluginSnapshot::default()))).is_err());
+    assert!(failed.connect("unused".into(),false,false,Arc::new(|_| {})).err().unwrap().contains("test metadata capture failed"));
+}
+
+#[test]
+fn plugin_launch_arguments_are_fixed_snapshot_inputs_and_reconnections_do_not_rescan() {
+    let fixture = TempDirectory::new();
+    let packages = fixture.0.join("config/plugins");
+    let first_package = packages.join("first");
+    std::fs::create_dir_all(&first_package).unwrap();
+    std::fs::write(first_package.join("manifest.json"),b"{}").unwrap();
+    let snapshot = Arc::new(PluginSnapshot::capture(&packages,&fixture.0.join("data")).unwrap());
+    let manager = BackendManager::default();
+    manager.configure_plugin_snapshot(Ok(snapshot.clone())).unwrap();
+    let related = manager.related_manager();
+    assert!(Arc::ptr_eq(&snapshot,&related.plugin_snapshot().unwrap()));
+    let arguments = |plugins: &PluginSnapshot,workspace: &Path| {
+        Connection::launch_command(Path::new("fixed-sidecar"),workspace,false,false,plugins).unwrap()
+            .get_args().map(|value| value.to_string_lossy().into_owned()).collect::<Vec<_>>()
+    };
+    let first = arguments(&snapshot,&fixture.0);
+    assert_eq!(first[0],"--workspace");
+    assert_eq!(first[2],"--plugin-snapshot");
+    assert_eq!(first[4],"--plugin-snapshot-sha256");
+    assert_eq!(first[6],"--plugin-data");
+    assert_eq!(first[5].len(),64);
+    std::fs::create_dir(packages.join("added-later")).unwrap();
+    std::fs::write(packages.join("added-later/manifest.json"),b"{}").unwrap();
+    let reopened = arguments(&manager.plugin_snapshot().unwrap(),&fixture.0);
+    let ai = arguments(&related.plugin_snapshot().unwrap(),&fixture.0);
+    assert_eq!(first,reopened);
+    assert_eq!(first,ai);
+    let captured: Value = serde_json::from_slice(&std::fs::read(&first[3]).unwrap()).unwrap();
+    assert_eq!(captured["packages"].as_array().unwrap().len(),1);
+    let default_args = arguments(&PluginSnapshot::default(),&fixture.0);
+    assert_eq!(default_args.len(),2);
+}
+
+#[test]
 fn connection_close_rejects_every_waiter_once_and_invalidates_writer() {
     let (shared, events) = isolated_shared();
     let mut receivers = Vec::new();
@@ -182,6 +229,35 @@ fn control_executable() -> PathBuf {
         if candidate.is_file() { return std::fs::canonicalize(candidate).unwrap(); }
     }
     panic!("Build the C++ control-cli target before running the desktop backend integration test");
+}
+
+#[cfg(windows)]
+#[test]
+fn real_sidecar_reuses_captured_packages_on_reconnect_and_keeps_builtin_nodes_on_package_errors() {
+    let fixture = TempDirectory::new();
+    let packages = fixture.0.join("config/plugins");
+    std::fs::create_dir_all(packages.join("invalid-first")).unwrap();
+    std::fs::write(packages.join("invalid-first/manifest.json"),b"{}").unwrap();
+    let snapshot = Arc::new(PluginSnapshot::capture(&packages,&fixture.0.join("data")).unwrap());
+    let executable = control_executable();
+    let callback: DisconnectCallback = Arc::new(|_| {});
+    let first = Connection::spawn_with_plugins(&executable,fixture.0.clone(),"plugins-first".into(),
+        false,false,callback.clone(),snapshot.clone()).unwrap();
+    let first_caps = first.request(json!({"op":"capabilities"})).unwrap();
+    assert_eq!(first_caps["success"],true);
+    assert_eq!(first_caps["data"]["plugins"]["errors"].as_array().unwrap().len(),1);
+    let nodes = first.request(json!({"op":"nodes.list"})).unwrap();
+    assert_eq!(nodes["success"],true);
+    assert!(nodes["data"]["nodes"].as_array().unwrap().iter().any(|node| node["typeId"] == "gain"));
+    first.shutdown("Plugin snapshot reconnect test").unwrap();
+    std::fs::create_dir(packages.join("invalid-added-later")).unwrap();
+    std::fs::write(packages.join("invalid-added-later/manifest.json"),b"{}").unwrap();
+    let second = Connection::spawn_with_plugins(&executable,fixture.0.clone(),"plugins-second".into(),
+        false,false,callback,snapshot).unwrap();
+    let second_caps = second.request(json!({"op":"capabilities"})).unwrap();
+    assert_eq!(second_caps["success"],true);
+    assert_eq!(second_caps["data"]["plugins"]["errors"].as_array().unwrap().len(),1);
+    second.shutdown("Plugin snapshot reconnect test complete").unwrap();
 }
 
 #[cfg(windows)]

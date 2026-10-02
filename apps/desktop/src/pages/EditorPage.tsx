@@ -210,7 +210,7 @@ export default function EditorPage({
               disabled={
                 !connection ||
                 submittingLocked ||
-                !!task ||
+                session.taskBlocked ||
                 !draft.validationCurrent ||
                 !canSubmitGraph
               }
@@ -218,7 +218,7 @@ export default function EditorPage({
             >
               提交任务
             </button>
-            {task && <button onClick={onTasks}>查看现有任务</button>}
+            {task && <button onClick={onTasks}>查看运行记录</button>}
           </div>
         </div>
         {draft.mode === "realtime" && (

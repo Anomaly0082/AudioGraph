@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
+use crate::plugin_snapshot::PluginSnapshot;
 
 pub(crate) const MAX_REQUEST: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE: usize = 8 * 1024 * 1024;
@@ -98,19 +99,43 @@ impl Connection {
     pub(crate) fn spawn(executable: &Path, workspace: PathBuf, session_id: String,
                        allow_devices: bool, allow_monitor: bool,
                        on_disconnect: DisconnectCallback) -> Result<Arc<Self>, String> {
+        Self::spawn_with_plugins(executable,workspace,session_id,allow_devices,allow_monitor,on_disconnect,
+            Arc::new(PluginSnapshot::default()))
+    }
+
+    pub(crate) fn spawn_with_plugins(executable: &Path,workspace: PathBuf,session_id: String,
+        allow_devices: bool,allow_monitor: bool,on_disconnect: DisconnectCallback,
+        plugins: Arc<PluginSnapshot>) -> Result<Arc<Self>,String> {
+        let mut command = Self::launch_command(executable,&workspace,allow_devices,allow_monitor,&plugins)?;
+        let mut child = command.spawn().map_err(|e| format!("无法启动固定 control-cli：{e}"))?;
+        let input = child.stdin.take().ok_or("后台进程未提供stdin")?;
+        let output = child.stdout.take().ok_or("后台进程未提供stdout")?;
+        let errors = child.stderr.take().ok_or("后台进程未提供stderr")?;
+        Self::attach_child(child,input,output,errors,workspace,session_id,on_disconnect)
+    }
+
+    fn launch_command(executable: &Path,workspace: &Path,allow_devices: bool,allow_monitor: bool,
+        plugins: &PluginSnapshot) -> Result<Command,String> {
         let mut command = Command::new(executable);
-        command.arg("--workspace").arg(&workspace);
+        command.arg("--workspace").arg(workspace);
         if allow_devices { command.arg("--allow-devices"); }
         if allow_monitor { command.arg("--allow-monitor"); }
-        command.current_dir(&workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if let Some(launch) = plugins.launch_for(workspace)? {
+            command.arg("--plugin-snapshot").arg(launch.snapshot_path)
+                .arg("--plugin-snapshot-sha256").arg(launch.snapshot_sha256)
+                .arg("--plugin-data").arg(launch.data_root);
+        }
+        command.current_dir(workspace).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)] {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x08000000); // CREATE_NO_WINDOW，不弹出额外终端。
         }
-        let mut child = command.spawn().map_err(|e| format!("无法启动固定 control-cli：{e}"))?;
-        let mut input = child.stdin.take().ok_or("后台进程未提供stdin")?;
-        let mut output = child.stdout.take().ok_or("后台进程未提供stdout")?;
-        let mut errors = child.stderr.take().ok_or("后台进程未提供stderr")?;
+        Ok(command)
+    }
+
+    fn attach_child(mut child: std::process::Child,mut input: std::process::ChildStdin,
+        mut output: std::process::ChildStdout,mut errors: std::process::ChildStderr,workspace: PathBuf,
+        session_id: String,on_disconnect: DisconnectCallback) -> Result<Arc<Self>,String> {
         let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(MAX_PENDING);
         let shared = Arc::new(Shared {
             session_id, alive: AtomicBool::new(true), pending: Mutex::new(HashMap::new()),
@@ -288,16 +313,39 @@ pub struct BackendManager {
     next_session: AtomicU64,
     pub closing: AtomicBool,
     pub shutdown_complete: AtomicBool,
+    plugins: Mutex<PluginConfiguration>,
 }
+
+#[derive(Clone)]
+struct PluginConfiguration { configured: bool,snapshot: Result<Arc<PluginSnapshot>,String> }
 
 impl Default for BackendManager {
     fn default() -> Self {
         Self { connection: Mutex::new(None), lifecycle: Mutex::new(()), next_session: AtomicU64::new(1),
-            closing: AtomicBool::new(false), shutdown_complete: AtomicBool::new(false) }
+            closing: AtomicBool::new(false), shutdown_complete: AtomicBool::new(false),
+            plugins:Mutex::new(PluginConfiguration { configured:false,snapshot:Ok(Arc::new(PluginSnapshot::default())) }) }
     }
 }
 
 impl BackendManager {
+    pub(crate) fn configure_plugin_snapshot(&self,snapshot: Result<Arc<PluginSnapshot>,String>) -> Result<(),String> {
+        let _operation = self.lifecycle.lock().unwrap();
+        let mut current = self.plugins.lock().unwrap();
+        if current.configured || self.connection.lock().unwrap().is_some() { return Err("Plugin snapshot was already configured for this application run".into()); }
+        current.configured = true;
+        current.snapshot = snapshot;
+        current.snapshot.as_ref().map(|_| ()).map_err(|error| error.clone())
+    }
+
+    pub(crate) fn related_manager(&self) -> Self {
+        let manager = Self::default();
+        *manager.plugins.lock().unwrap() = self.plugins.lock().unwrap().clone();
+        manager
+    }
+
+    pub(crate) fn plugin_snapshot(&self) -> Result<Arc<PluginSnapshot>,String> {
+        self.plugins.lock().unwrap().snapshot.clone().map_err(|error| format!("插件启动快照初始化失败：{error}；请修正安装目录并重启应用，未静默禁用插件。"))
+    }
     #[cfg(test)]
     pub(crate) fn with_test_connection(connection: Arc<Connection>) -> Self {
         let manager = Self::default();
@@ -309,6 +357,7 @@ impl BackendManager {
                    callback: DisconnectCallback) -> Result<ConnectionInfo, String> {
         let _operation = self.lifecycle.lock().unwrap();
         if self.closing.load(Ordering::Acquire) { return Err("窗口正在关闭".into()); }
+        let plugins = self.plugin_snapshot()?;
         if allow_monitor && !allow_devices { return Err("有声输出必须同时允许设备访问".into()); }
         let workspace = std::fs::canonicalize(workspace).map_err(|e| format!("工作目录无效：{e}"))?;
         if !workspace.is_dir() { return Err("工作区必须是已有目录".into()); }
@@ -321,16 +370,21 @@ impl BackendManager {
         let id = self.next_session.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "连接ID耗尽，请重启应用")?;
         let executable = fixed_sidecar()?;
-        let connection = Connection::spawn(&executable, workspace.clone(), format!("session-{id}"),
-            allow_devices, allow_monitor, callback)?;
+        let connection = Connection::spawn_with_plugins(&executable, workspace.clone(), format!("session-{id}"),
+            allow_devices, allow_monitor, callback,plugins.clone())?;
         let capabilities = connection.request(json!({"op":"capabilities"}))?;
         if capabilities.get("success") != Some(&Value::Bool(true)) {
             let _ = connection.shutdown("后台能力握手失败。");
             return Err(format!("后台能力握手失败：{capabilities}"));
         }
+        let mut capability_data = capabilities.get("data").cloned().ok_or("能力响应缺少data")?;
+        if let Some(directory) = plugins.plugin_directory() {
+            capability_data.as_object_mut().ok_or("能力响应data不是对象")?
+                .insert("plugin_directory".into(),json!(directory.to_string_lossy()));
+        }
         let result = ConnectionInfo { session_id: connection.shared.session_id.clone(),
             workspace: workspace.to_string_lossy().into_owned(), allow_devices, allow_monitor,
-            capabilities: capabilities.get("data").cloned().ok_or("能力响应缺少data")?, previous_forced_disconnect };
+            capabilities: capability_data, previous_forced_disconnect };
         *self.connection.lock().unwrap() = Some(connection);
         Ok(result)
     }

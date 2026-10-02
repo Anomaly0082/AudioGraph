@@ -130,7 +130,7 @@ void validate_instance_descriptor(const NodeDescriptor& expected, const NodeDesc
     if (actual.type_id != expected.type_id || actual.execution_domain != expected.execution_domain ||
         actual.stream_role != expected.stream_role || !matching_ports(expected.inputs, actual.inputs) ||
         !matching_ports(expected.outputs, actual.outputs) || actual.realtime_role != expected.realtime_role ||
-        actual.realtime_capabilities != expected.realtime_capabilities) {
+        actual.realtime_capabilities != expected.realtime_capabilities || actual.plugin != expected.plugin) {
         throw ExecutionError("invalid_factory", "Node factory returned a different execution contract: " + expected.type_id);
     }
 }

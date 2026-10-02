@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import Disclosure from "../components/Disclosure";
 import type { RunRecords } from "../hooks/useRunRecords";
 import {
@@ -13,50 +12,71 @@ import type { RunSummary } from "../types/run-record";
 type Props = {
   records: RunRecords;
   connected: boolean;
-  currentTask?: ReactNode;
-  taskActive: boolean;
+  currentTask?: {
+    runId?: string;
+    state: string;
+    busy: boolean;
+    onStop: () => void;
+  };
 };
 export default function RunRecordsPage({
   records: runs,
   connected,
   currentTask,
-  taskActive,
 }: Props) {
   const grouped = groupRuns(runs.records);
   const record = runs.record;
+  const isCurrent = (run: RunSummary) =>
+    run.kind === "graph" &&
+    run.origin === "manual" &&
+    !!currentTask?.runId &&
+    currentTask.runId === run.id;
+  const shownState = (run: RunSummary) =>
+    isCurrent(run) ? currentTask!.state : run.state;
   function entry(run: RunSummary) {
+    const state = shownState(run);
+    const canStop =
+      isCurrent(run) && ["queued", "running", "cancelling"].includes(state);
     return (
-      <button
-        type="button"
-        className={`run-row ${runs.selectedId === run.id ? "selected" : ""}`}
-        aria-pressed={runs.selectedId === run.id}
-        onClick={() => runs.select(run.id)}
-      >
-        <span>
-          <strong>{run.name}</strong>
-          <small>
-            {run.kind === "workflow" ? "Workflow" : "Graph"} ·{" "}
-            {run.origin === "ai" ? "AI" : "手动"}
-          </small>
-        </span>
-        <span>
-          <span
-            className={`badge ${run.state === "succeeded" ? "good" : ["failed", "limited", "interrupted", "unknown"].includes(run.state) ? "bad" : ""}`}
-          >
-            {runStateLabels[run.state] ?? run.state}
+      <div className="run-row-actions">
+        <button
+          type="button"
+          className={`run-row ${runs.selectedId === run.id ? "selected" : ""}`}
+          aria-pressed={runs.selectedId === run.id}
+          onClick={() => runs.select(run.id)}
+        >
+          <span>
+            <strong>{run.name}</strong>
+            <small>
+              {run.kind === "workflow" ? "Workflow" : "Graph"} ·{" "}
+              {run.origin === "ai" ? "AI" : "手动"}
+            </small>
           </span>
-          <small>{formatRunTime(run.started_at_ms)}</small>
-        </span>
-      </button>
+          <span>
+            <span
+              className={`badge ${state === "succeeded" ? "good" : ["failed", "limited", "interrupted", "unknown"].includes(state) ? "bad" : ""}`}
+            >
+              {runStateLabels[state] ?? state}
+            </span>
+            <small>{formatRunTime(run.started_at_ms)}</small>
+          </span>
+        </button>
+        {canStop && (
+          <button
+            type="button"
+            className="danger run-stop"
+            aria-label={`停止 ${run.name}`}
+            disabled={currentTask!.busy || state === "cancelling"}
+            onClick={currentTask!.onStop}
+          >
+            {state === "cancelling" ? "正在停止…" : "停止"}
+          </button>
+        )}
+      </div>
     );
   }
   return (
     <div className="page-stack">
-      {currentTask && (
-        <Disclosure label="当前任务控制" open={taskActive}>
-          {currentTask}
-        </Disclosure>
-      )}
       <section className="panel">
         <div className="section-heading">
           <h2>运行记录</h2>
@@ -115,7 +135,7 @@ export default function RunRecordsPage({
                 <>
                   <h3>{record.name}</h3>
                   <p>
-                    {runStateLabels[record.state] ?? record.state} ·{" "}
+                    {runStateLabels[shownState(record)] ?? shownState(record)} ·{" "}
                     {formatRunTime(record.started_at_ms)} · 耗时{" "}
                     {formatRunDuration(record.duration_ms)}
                   </p>

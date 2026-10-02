@@ -7,9 +7,13 @@ export type AgentEvent = {
   arguments?: unknown;
   result?: unknown;
   success?: boolean;
+  omitted_bytes?: number;
 };
 export type AgentReply = {
   request_id: string;
+  conversation_id?: string;
+  run_ids?: string[];
+  omitted_text_bytes?: number;
   state: "completed" | "cancelled" | "limited" | "failed";
   text: string;
   events: AgentEvent[];

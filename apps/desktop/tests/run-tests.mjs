@@ -19,6 +19,10 @@ const testFiles = [
   "tests/disclosure.test.mjs",
   "tests/assistant-markdown.test.mjs",
   "tests/run-records.test.mjs",
+  "tests/task-finalization.test.mjs",
+  "tests/conversation.test.mjs",
+  "tests/workflow-editor.test.mjs",
+  "tests/workspace-browser.test.mjs",
 ];
 const result = spawnSync(process.execPath, ["--test", ...testFiles], {
   cwd: fileURLToPath(new URL("../", import.meta.url)),

@@ -18,7 +18,7 @@ const MAX_NESTING: usize = 4;
 const MAX_ITEMS: usize = 16;
 const TOOLS: &[&str] = &[
     "workspace_list", "file_read_text", "file_write_text", "file_delete",
-    "file_copy_to_ai", "file_export", "audio_inspect", "nodes_list",
+    "file_copy_to_ai", "file_export", "directory_create", "audio_inspect", "nodes_list",
     "graph_validate", "graph_run",
 ];
 

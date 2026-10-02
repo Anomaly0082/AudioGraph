@@ -8,6 +8,7 @@ export function useRunRecords(
   sessionId: string | undefined,
   visible: boolean,
   active: boolean,
+  revision?: string,
 ) {
   const [listing, setListing] = useState<RunList>({
     records: [],
@@ -155,7 +156,7 @@ export function useRunRecords(
       void refresh();
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [sessionId, visible, active]);
+  }, [sessionId, visible, active, revision]);
   return {
     ...listing,
     selectedId,

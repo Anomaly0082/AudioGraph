@@ -3,6 +3,7 @@ import { createTemplate, type GraphDocument, type TemplateKind } from "./model";
 export type PageId =
   | "workbench"
   | "editor"
+  | "files"
   | "tasks"
   | "settings";
 export const pages: { id: PageId; label: string; description: string }[] = [
@@ -13,8 +14,13 @@ export const pages: { id: PageId; label: string; description: string }[] = [
   },
   {
     id: "editor",
-    label: "Graph 编辑器",
-    description: "编辑独立草稿，查看节点约束，校验后再提交。",
+    label: "编辑器",
+    description: "编辑 Graph 或 Workflow 配置，校验后运行。",
+  },
+  {
+    id: "files",
+    label: "文件",
+    description: "浏览工作区文件并在本机预览。",
   },
   {
     id: "tasks",

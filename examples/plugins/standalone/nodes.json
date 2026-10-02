@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "plugin_id": "org.audiograph.example",
+  "plugin_version": "0.1.0",
+  "experimental": true,
+  "production_ready": false,
+  "nodes": [
+    {
+      "typeId": "org.audiograph.example.gain_v1",
+      "displayName": "Example Gain",
+      "description": "Standalone whole-value gain example using the experimental plugin ABI.",
+      "execution_domain": "synchronous",
+      "stream_role": "none",
+      "realtime_role": "none",
+      "inputs": [{"id": "audio", "type": "Audio", "required": true}],
+      "outputs": [{"id": "audio", "type": "Audio", "required": true}],
+      "parameters": [
+        {"id": "gain_db", "type": "number", "description": "Required normalized gain in decibels.", "required": true, "minimum": -24, "maximum": 12, "unit": "dB"}
+      ],
+      "plugin": {
+        "id": "org.audiograph.example",
+        "implementation_version": "0.1.0",
+        "capabilities": [{"id": "ag.whole_sync/1", "version": 1}],
+        "experimental": true,
+        "production_ready": false
+      }
+    },
+    {
+      "typeId": "org.audiograph.example.mock_asr_v1",
+      "displayName": "Example Mock ASR (Simulation)",
+      "description": "A cancellable local simulation that emits audio metadata as text. It performs no speech recognition, model inference or network requests.",
+      "execution_domain": "synchronous",
+      "stream_role": "none",
+      "realtime_role": "none",
+      "inputs": [{"id": "audio", "type": "Audio", "required": true}],
+      "outputs": [{"id": "text", "type": "Text", "required": true}],
+      "parameters": [
+        {"id": "delay_ms", "type": "number", "description": "Required normalized simulation delay in whole milliseconds.", "required": true, "minimum": 0, "maximum": 2000, "unit": "ms", "integer_only": true}
+      ],
+      "plugin": {
+        "id": "org.audiograph.example",
+        "implementation_version": "0.1.0",
+        "capabilities": [{"id": "ag.whole_sync/1", "version": 1}],
+        "experimental": true,
+        "production_ready": false
+      }
+    }
+  ]
+}

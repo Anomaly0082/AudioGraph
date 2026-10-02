@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "plugin_id": "org.audiograph.example",
+  "plugin_version": "0.1.0",
+  "experimental": true,
+  "production_ready": false,
+  "abi": {"major": 0, "minor": 1},
+  "platform": "@PLATFORM@",
+  "architecture": "x86_64",
+  "entry": "@ENTRY@",
+  "nodes": "nodes.json",
+  "capabilities": [{"id": "ag.whole_sync/1", "version": 1}],
+  "files": [
+    {"path": "@ENTRY@", "sha256": "@ENTRY_SHA256@"},
+    {"path": "nodes.json", "sha256": "@NODES_SHA256@"}
+  ]
+}
