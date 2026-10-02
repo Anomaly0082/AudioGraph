@@ -64,6 +64,14 @@ export async function chooseWorkspaceDirectory(): Promise<string | null> {
   });
   return typeof selected === "string" ? selected : null;
 }
+export async function choosePluginDirectory(): Promise<string | null> {
+  const selected = await open({
+    directory: true,
+    multiple: false,
+    title: "选择可信插件的完整文件夹",
+  });
+  return typeof selected === "string" ? selected : null;
+}
 export async function chooseGraphFile(
   workspace: string,
 ): Promise<string | null> {

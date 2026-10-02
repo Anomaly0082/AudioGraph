@@ -17,6 +17,7 @@ import {
   removeGraphNode,
   setGraphExport,
   setNodeParameter,
+  unavailableGraphNodes,
 } from "../graph-editor-model";
 import {
   initialCanvasView,
@@ -89,6 +90,8 @@ export default function EditorPage({
     return info && !isNodeAvailableInMode(info, draft.mode);
   });
   const canSubmitGraph = !!graph?.nodes.length && !draft.localGraph.error;
+  const missingNodes =
+    connection && graph ? unavailableGraphNodes(graph, nodes) : [];
   function change(action: (value: GraphDocument) => GraphDocument) {
     if (!graph || fileBusy) return;
     try {
@@ -211,6 +214,7 @@ export default function EditorPage({
                 !connection ||
                 submittingLocked ||
                 session.taskBlocked ||
+                missingNodes.length > 0 ||
                 !draft.validationCurrent ||
                 !canSubmitGraph
               }
@@ -231,6 +235,21 @@ export default function EditorPage({
           </p>
         )}
       </section>
+      {missingNodes.length > 0 && (
+        <section className="banner error" role="alert" aria-label="不可用节点">
+          <p>
+            以下节点类型不可用，暂不能运行。原有参数、连接和导出已保留，可继续编辑并另存。
+          </p>
+          <ul>
+            {missingNodes.map((node) => (
+              <li key={node.id}>
+                <code>{node.id}</code>：<code>{node.type}</code>
+              </li>
+            ))}
+          </ul>
+          <p>若来自插件，请在设置中安装或启用兼容插件，重启后重新校验。</p>
+        </section>
+      )}
       {error && (
         <div className="banner error" role="alert">
           {error}
@@ -248,11 +267,16 @@ export default function EditorPage({
             <GraphCanvas
               graph={graph}
               nodes={nodes}
+              catalogAvailable={!!connection}
               view={view}
               onView={draft.setCanvasView}
               disabled={fileBusy}
               connectionEditReason={
-                !connection ? "打开工作区后可编辑连线" : undefined
+                !connection
+                  ? "打开工作区后可编辑连线"
+                  : missingNodes.length
+                    ? "节点类型不可用，连线暂为只读"
+                    : undefined
               }
               onConnect={(from, to, originalIndex) =>
                 connection &&
@@ -294,6 +318,7 @@ export default function EditorPage({
                   key={selected.id + ":" + selected.type}
                   node={selected}
                   descriptor={descriptor}
+                  catalogAvailable={!!connection}
                   devices={session.devices}
                   canListDevices={!!connection?.allowDevices && !busy}
                   onListDevices={onDevices}

@@ -163,6 +163,15 @@ if(BUILD_TESTING AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_sdk_standalone.cmake")
     set_tests_properties(plugin-sdk-standalone PROPERTIES TIMEOUT 180)
     set_tests_properties(plugin-sdk-standalone PROPERTIES FIXTURES_SETUP plugin_sdk_package)
+    add_test(NAME plugin-devkit-relocated COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/plugin-devkit-relocated"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DPLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DCONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin_devkit.cmake")
+    set_tests_properties(plugin-devkit-relocated PROPERTIES TIMEOUT 240)
     add_executable(plugin-host-tests tests/plugin_host_tests.cpp)
     target_link_libraries(plugin-host-tests PRIVATE audio_control audio_plugins audio_graph_io nlohmann_json::nlohmann_json bcrypt)
     target_compile_options(plugin-host-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)

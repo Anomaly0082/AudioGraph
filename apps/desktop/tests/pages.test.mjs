@@ -24,6 +24,19 @@ const {
 const render = (Component, props) =>
   renderToStaticMarkup(React.createElement(Component, props));
 const noop = () => {};
+const pluginManager = (view = null) => ({
+  view,
+  loading: false,
+  busy: false,
+  operation: null,
+  error: "",
+  notice: "",
+  refresh: noop,
+  install: noop,
+  setEnabled: noop,
+  uninstall: noop,
+  cancelUninstall: noop,
+});
 const graph = {
   schema_version: 1,
   nodes: [
@@ -71,7 +84,7 @@ test("external nodes use the ordinary catalog UI and retain their provenance", (
   assert.match(html, /gain_db/);
 });
 
-test("plugin settings expose the selected directory and rejected package diagnostics without activation controls", () => {
+test("plugin settings keep startup diagnostics separate from next-start management", () => {
   const settings = {
     config: { baseUrl: "", model: "", apiKey: "" },
     editing: false,
@@ -107,9 +120,32 @@ test("plugin settings expose the selected directory and rejected package diagnos
       },
     },
   };
-  const html = render(SettingsPage, { settings, session, workflowBusy: false });
+  const html = render(SettingsPage, {
+    settings,
+    session: { ...session, desktop: true },
+    workflowBusy: false,
+    plugins: pluginManager({
+      directory: "C:/test/plugins",
+      restart_required: false,
+      warnings: [],
+      entries: [
+        {
+          folder: "example",
+          plugin_id: "test.plugin",
+          plugin_version: "0.1.0",
+          node_types: [],
+          enabled: true,
+          pending_uninstall: false,
+          active: true,
+          can_manage: true,
+          revision: "r1",
+          error: null,
+        },
+      ],
+    }),
+  });
   assert.match(html, /C:\/test\/plugins/);
-  assert.match(html, /重启软件后生效/);
+  assert.match(html, /下次启动/);
   assert.match(html, /test.plugin/);
   assert.match(html, /Invalid package hash/);
   assert.match(html, /role="alert"/);
@@ -336,7 +372,21 @@ test("editor submission follows task ownership and release, not the presence of 
       session: {
         desktop: true,
         busy: null,
-        connection: { sessionId: "session-a", capabilities: { nodes: [] } },
+        connection: {
+          sessionId: "session-a",
+          capabilities: {
+            nodes: [
+              {
+                typeId: "text_input",
+                displayName: "Text Input",
+                execution_domain: "synchronous",
+                inputs: [],
+                outputs: [{ id: "text", type: "Text" }],
+                parameters: [],
+              },
+            ],
+          },
+        },
         devices: { inputs: [], outputs: [] },
         task: current,
         taskBlocked: taskBlocksSubmission(current, "session-a"),
@@ -386,6 +436,110 @@ test("editor submission follows task ownership and release, not the presence of 
     ),
     true,
   );
+});
+
+test("a missing plugin blocks run but preserves save, JSON, parameters, edges and exports", () => {
+  const missing = {
+    schema_version: 1,
+    nodes: [
+      {
+        id: "missing",
+        type: "org.example.absent.v1",
+        parameters: { amount: 3, untouched: "keep-me" },
+      },
+    ],
+    connections: [],
+    exports: [
+      { name: "original-export", node: "missing", port: "original_port" },
+    ],
+  };
+  const original = JSON.stringify(missing);
+  const draft = {
+    mode: "offline",
+    template: "text",
+    graphText: original,
+    fileLabel: "missing.json",
+    blockFrames: "256",
+    duration: "10",
+    probe: true,
+    validationCurrent: true,
+    localGraph: { graph: missing, error: "" },
+    canvasView: {
+      positions: {},
+      selectedId: "missing",
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+    },
+    setTemplate: noop,
+    editGraph: noop,
+    setMode: noop,
+    setBlockFrames: noop,
+    setDuration: noop,
+    setProbe: noop,
+    setCanvasView: noop,
+  };
+  const session = {
+    desktop: true,
+    busy: null,
+    task: null,
+    taskBlocked: false,
+    devices: { inputs: [], outputs: [] },
+    connection: { sessionId: "s", capabilities: { nodes: [] } },
+  };
+  const props = {
+    draft,
+    session,
+    selection: { search: "" },
+    submittingLocked: false,
+    onSelection: noop,
+    onValidate: noop,
+    onRun: noop,
+    onLoadTemplate: noop,
+    onLoad: noop,
+    onSave: noop,
+    onDevices: noop,
+    onTasks: noop,
+  };
+  const html = render(EditorPage, props);
+  assert.match(html, /aria-label="不可用节点"/);
+  assert.match(html, /类型不可用/);
+  assert.match(html, /org.example.absent.v1/);
+  assert.match(html, /keep-me/);
+  assert.match(html, /original-export/);
+  assert.match(html, /original_port/);
+  assert.match(html.match(/<button([^>]*)>提交任务<\/button>/)[1], /disabled/);
+  assert.doesNotMatch(
+    html.match(/<button([^>]*)>另存为新文件<\/button>/)[1],
+    /disabled/,
+  );
+  assert.equal(JSON.stringify(missing), original);
+  const restored = render(EditorPage, {
+    ...props,
+    session: {
+      ...session,
+      connection: {
+        sessionId: "s2",
+        capabilities: {
+          nodes: [
+            {
+              typeId: "org.example.absent.v1",
+              displayName: "Restored",
+              execution_domain: "synchronous",
+              inputs: [],
+              outputs: [{ id: "original_port", type: "Number" }],
+              parameters: [],
+            },
+          ],
+        },
+      },
+    },
+  });
+  assert.doesNotMatch(restored, /aria-label="不可用节点"/);
+  assert.doesNotMatch(
+    restored.match(/<button([^>]*)>提交任务<\/button>/)[1],
+    /disabled/,
+  );
+  assert.equal(JSON.stringify(missing), original);
 });
 
 test("tasks page presents the submitted snapshot and authoritative output", () => {
@@ -450,6 +604,7 @@ test("settings page alone renders API Key as a password input", () => {
   const html = render(SettingsPage, {
     settings,
     session,
+    plugins: pluginManager(),
     workflowBusy: false,
   });
   assert.match(html, /API Key/);

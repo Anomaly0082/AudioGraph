@@ -7,10 +7,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <charconv>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <new>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -196,14 +198,28 @@ ag_status run_impl(ExampleKind expected, ag_instance* instance, const ag_named_v
     const auto count = static_cast<std::size_t>(audio.sample_count);
     if (expected == ExampleKind::Gain) {
         if (sample_bytes > context->max_output_bytes) return fail(AG_RESOURCE_LIMIT,errors,"output_budget","Audio output exceeds the host byte budget.","audio");
+        // Read only during execution; resource_root denotes the package root.
+        const auto resource = std::filesystem::u8path(instance->resource_root)/"resources"/"config"/"gain-scale.txt";
+        std::ifstream stream(resource,std::ios::binary);
+        if (!stream) return fail(AG_EXECUTION_FAILED,errors,"resource_missing","Cannot open resources/config/gain-scale.txt.");
+        char buffer[65]{};
+        stream.read(buffer,sizeof(buffer));
+        const auto bytes = static_cast<std::size_t>(stream.gcount());
+        if (stream.bad() || bytes == 0 || bytes > 64) return fail(AG_EXECUTION_FAILED,errors,"resource_invalid","Gain scale resource must contain at most 64 bytes.");
+        std::string_view text(buffer,bytes);
+        while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.remove_suffix(1);
+        double scale = 0;
+        const auto parsed = std::from_chars(text.data(),text.data()+text.size(),scale);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data()+text.size() || !std::isfinite(scale) || scale <= 0 || scale > 16)
+            return fail(AG_EXECUTION_FAILED,errors,"resource_invalid","Gain scale must be a finite number in (0, 16].");
+        if (const auto status = check_interrupt(*context,errors); status != AG_OK) return status;
         std::vector<float> result(count);
-        const double factor = std::pow(10.0,instance->parameter/20.0);
+        const double factor = std::pow(10.0,instance->parameter/20.0)*scale;
         for (std::size_t offset = 0; offset < count;) {
             if (const auto status = check_interrupt(*context,errors); status != AG_OK) return status;
             const auto length = std::min(chunk_samples,count-offset);
-            const std::span<const float> source(audio.samples+offset,length);
-            if (!example_algorithms::finite_block(source)) return fail(AG_INVALID_ARGUMENT,errors,"non_finite_audio","Audio samples must be finite.","audio");
-            if (!example_algorithms::gain_block(source,factor,std::span<float>{result.data()+offset,length})) {
+            if (!example_finite_block(audio.samples+offset,length)) return fail(AG_INVALID_ARGUMENT,errors,"non_finite_audio","Audio samples must be finite.","audio");
+            if (!example_gain_block(audio.samples+offset,length,factor,result.data()+offset)) {
                 return fail(AG_EXECUTION_FAILED,errors,"non_finite_output","Gain would produce non-finite float32 samples.","audio");
             }
             offset += length;
@@ -216,7 +232,7 @@ ag_status run_impl(ExampleKind expected, ag_instance* instance, const ag_named_v
     for (std::size_t offset = 0; offset < count;) {
         if (const auto status = check_interrupt(*context,errors); status != AG_OK) return status;
         const auto length = std::min(chunk_samples,count-offset);
-        if (!example_algorithms::finite_block(std::span<const float>{audio.samples+offset,length})) {
+        if (!example_finite_block(audio.samples+offset,length)) {
             return fail(AG_INVALID_ARGUMENT,errors,"non_finite_audio","Audio samples must be finite.","audio");
         }
         offset += length;
@@ -230,7 +246,8 @@ ag_status run_impl(ExampleKind expected, ag_instance* instance, const ag_named_v
         if (step > ClockDuration::zero()) std::this_thread::sleep_for(step);
     }
     if (const auto status = check_interrupt(*context,errors); status != AG_OK) return status;
-    const std::string text = example_algorithms::mock_transcript(audio.frame_count,audio.channel_count,audio.sample_rate);
+    const std::string text = "[MOCK ASR] frames="+std::to_string(audio.frame_count)+", channels="+std::to_string(audio.channel_count)
+        +", sample_rate="+std::to_string(audio.sample_rate)+"; no speech recognition performed.";
     if (text.size() > context->max_output_bytes) return fail(AG_RESOURCE_LIMIT,errors,"output_budget","Mock text exceeds the host byte budget.","text");
     ag_value output{};
     output.type = AG_TEXT;

@@ -98,6 +98,26 @@ bool leaf_name(const std::string& text) {
         text.find_first_of("/\\:") == std::string::npos &&
         text.back() != '.' && text.back() != ' ';
 }
+std::string folded(std::string text) {
+    std::transform(text.begin(),text.end(),text.begin(),[](unsigned char c){return c >= 'A' && c <= 'Z' ? c+32 : c;});
+    return text;
+}
+bool safe_segment(const std::string& text) {
+    if (!safe_id(text) || text.back() == '.') return false;
+    const auto stem=folded(text.substr(0,text.find('.')));
+    return stem != "con" && stem != "prn" && stem != "aux" && stem != "nul" &&
+        !(stem.size()==4 && (stem.rfind("com",0)==0 || stem.rfind("lpt",0)==0) && stem[3]>='1' && stem[3]<='9');
+}
+bool resource_path(const std::string& path) {
+    if (path.size()>256 || path.rfind("resources/",0)!=0) return false;
+    std::size_t start=0, count=0;
+    for (;;) {
+        const auto end=path.find('/',start);
+        if (++count>4 || !safe_segment(path.substr(start,end==std::string::npos ? end : end-start))) return false;
+        if (end==std::string::npos) return count>=2;
+        start=end+1;
+    }
+}
 Json parse_json(const std::string& text) {
     std::vector<std::set<std::string>> keys;
     auto callback = [&keys](int depth, Json::parse_event_t event, Json& value) {
@@ -258,6 +278,9 @@ bool path_within(const fs::path& parent, const fs::path& child) {
 #endif
 
 struct Package {
+    bool strict_inventory{};
+    struct File { std::string path; std::string sha; std::string role; std::uint64_t limit; };
+    std::vector<File> files;
     fs::path root;
     fs::path entry;
     fs::path nodes_path;
@@ -382,6 +405,26 @@ NodeDescriptor parse_descriptor(const Json& item, const Package& package) {
 }
 
 #ifdef _WIN32
+void inventory_package(const Package& package) {
+    std::set<std::string> files{"manifest.json"}, directories;
+    for (const auto& file:package.files) {
+        files.insert(folded(file.path));
+        for (auto pos=file.path.find('/');pos!=std::string::npos;pos=file.path.find('/',pos+1))
+            directories.insert(folded(file.path.substr(0,pos)));
+    }
+    std::size_t count=0;
+    for (const auto& item:fs::recursive_directory_iterator(package.root)) {
+        if (++count>256) fail("plugin_manifest_invalid","Package tree exceeds inventory limit");
+        auto relative=utf8_path(item.path().lexically_relative(package.root));
+        std::replace(relative.begin(),relative.end(),'\\','/');
+        const auto attributes=GetFileAttributesW(item.path().c_str());
+        if (attributes==INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            fail("plugin_path_invalid","Linked or unavailable package member");
+        const bool directory=(attributes & FILE_ATTRIBUTE_DIRECTORY)!=0;
+        if (!(directory ? directories : files).contains(folded(relative)))
+            fail("plugin_manifest_invalid","Unlisted package member");
+    }
+}
 Package prepare_package(const Json& snapshot, const PluginHostOptions& options) {
     expect_fields(snapshot,{"root","manifest_sha256"});
     auto root_text=required_string(snapshot,"root",4096);
@@ -397,7 +440,9 @@ Package prepare_package(const Json& snapshot, const PluginHostOptions& options) 
     const auto manifest=parse_json(manifest_file.bytes);
     expect_fields(manifest,{"schema_version","plugin_id","plugin_version","experimental","production_ready",
         "abi","platform","architecture","entry","nodes","capabilities","files"});
-    if (!schema_one(manifest) || manifest.value("platform",std::string{}) != "Windows" ||
+    const bool v2=manifest.contains("schema_version") && manifest["schema_version"].is_number_integer() && manifest["schema_version"]==2;
+    package.strict_inventory=v2;
+    if ((!schema_one(manifest) && !v2) || manifest.value("platform",std::string{}) != "Windows" ||
         manifest.value("architecture",std::string{}) != "x86_64" || !manifest.contains("abi") ||
         manifest["abi"] != Json{{"major",0},{"minor",1}} || !manifest.contains("capabilities") ||
         !manifest.contains("experimental") || manifest["experimental"] != true ||
@@ -410,26 +455,51 @@ Package prepare_package(const Json& snapshot, const PluginHostOptions& options) 
         fail("plugin_manifest_invalid","Invalid plugin identity");
     const auto entry=required_string(manifest,"entry",128);
     const auto nodes=required_string(manifest,"nodes",128);
-    if (!leaf_name(entry) || !leaf_name(nodes) || entry == nodes ||
+    if (!leaf_name(entry) || (v2 && !safe_segment(entry)) || !leaf_name(nodes) || entry == nodes ||
         fs::path(entry).extension() != ".dll" || nodes != "nodes.json")
         fail("plugin_manifest_invalid","Unsafe plugin entry or nodes filename");
     package.entry=package.root / path_from_utf8(entry);
     package.nodes_path=package.root / path_from_utf8(nodes);
-    if (!manifest.contains("files") || !manifest["files"].is_array() || manifest["files"].size() != 2)
+    if (!manifest.contains("files") || !manifest["files"].is_array() || manifest["files"].size()<2 ||
+        manifest["files"].size()>64 || (!v2 && manifest["files"].size()!=2))
         fail("plugin_manifest_invalid","Manifest must hash entry and nodes files");
     std::unordered_map<std::string,std::string> hashes;
+    std::set<std::string> folded_paths;
+    unsigned entry_count=0,nodes_count=0;
     for (const auto& item : manifest["files"]) {
-        expect_fields(item,{"path","sha256"});
-        const auto path=required_string(item,"path",128);
+        if (v2) expect_fields(item,{"path","sha256","role"}); else expect_fields(item,{"path","sha256"});
+        const auto path=required_string(item,"path",256);
         const auto hash=required_string(item,"sha256",64);
-        if (!leaf_name(path) || !sha256_text(hash) || !hashes.emplace(path,hash).second)
+        const auto role=v2 ? required_string(item,"role",32) : (path==entry ? "entry" : "nodes");
+        bool valid=false;
+        if (role=="entry") { valid=path==entry; ++entry_count; }
+        else if (role=="nodes") { valid=path==nodes; ++nodes_count; }
+        else if (role=="dependency") valid=leaf_name(path) && safe_segment(path) &&
+            path.rfind(package.plugin_id+".",0)==0 && folded(path).ends_with(".dll");
+        else if (role=="resource") valid=resource_path(path);
+        if (!valid || (!v2 && !leaf_name(path)) || !sha256_text(hash) || !hashes.emplace(path,hash).second ||
+            !folded_paths.insert(folded(path)).second)
             fail("plugin_manifest_invalid","Duplicate or invalid manifest file");
+        package.files.push_back({path,hash,role,role=="nodes" ? nodes_limit : dll_limit});
     }
-    if (!hashes.contains(entry) || !hashes.contains(nodes)) fail("plugin_manifest_invalid","Missing hashed package member");
+    if (entry_count!=1 || nodes_count!=1 || !hashes.contains(entry) || !hashes.contains(nodes)) fail("plugin_manifest_invalid","Missing hashed package member");
     package.entry_sha=hashes.at(entry);
     package.nodes_sha=hashes.at(nodes);
-    if (static_file(package.entry,dll_limit).sha != package.entry_sha)
-        fail("plugin_hash_mismatch","Plugin DLL fingerprint changed");
+    if (v2) inventory_package(package);
+    std::uint64_t total=0;
+    std::vector<Handle> validation_files;
+    for (const auto& file:package.files) {
+        auto handle=open_checked(package.root/path_from_utf8(file.path),file.limit);
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(handle.value,&size) || size.QuadPart<0 ||
+            static_cast<std::uint64_t>(size.QuadPart)>1024ull*1024*1024-total)
+            fail("plugin_file_too_large","Package exceeds total content limit");
+        total+=static_cast<std::uint64_t>(size.QuadPart);
+        validation_files.push_back(std::move(handle));
+    }
+    for (std::size_t i=0;i<package.files.size();++i)
+        if (hash_handle(validation_files[i].value)!=package.files[i].sha)
+            fail("plugin_hash_mismatch","Plugin package member fingerprint changed");
     const auto nodes_file=static_file(package.nodes_path,nodes_limit);
     if (nodes_file.sha != package.nodes_sha) fail("plugin_hash_mismatch","Plugin node description fingerprint changed");
     package.nodes_bytes=nodes_file.bytes;
@@ -480,14 +550,16 @@ struct PackageRuntime {
     std::string load_error;
     HMODULE module{}; // deliberately retained until process exit
     ag_plugin_api api{};
-    std::array<Handle,3> pinned;
+    std::vector<Handle> pinned;
 
     explicit PackageRuntime(Package value):package(std::move(value)) {}
     void verify_handles() {
-        if (hash_handle(pinned[0].value) != package.manifest_sha ||
-            hash_handle(pinned[1].value) != package.nodes_sha ||
-            hash_handle(pinned[2].value) != package.entry_sha)
+        if (hash_handle(pinned[0].value) != package.manifest_sha)
             fail("plugin_hash_mismatch","Pinned plugin package bytes changed");
+        for (std::size_t i=0;i<package.files.size();++i)
+            if (hash_handle(pinned[i+1].value)!=package.files[i].sha)
+                fail("plugin_hash_mismatch","Pinned plugin package member bytes changed");
+        if (package.strict_inventory) inventory_package(package);
     }
     void ensure_loaded() {
         std::scoped_lock lock(mutex);
@@ -495,14 +567,26 @@ struct PackageRuntime {
         if (loaded) { verify_handles(); return; }
         HMODULE fresh_module{};
         try {
-            std::array<Handle,3> files{
-                open_checked(package.root / "manifest.json",manifest_limit,true),
-                open_checked(package.nodes_path,nodes_limit,true),
-                open_checked(package.entry,dll_limit,true)};
-            if (hash_handle(files[0].value) != package.manifest_sha ||
-                hash_handle(files[1].value) != package.nodes_sha ||
-                hash_handle(files[2].value) != package.entry_sha)
+            std::vector<Handle> files;
+            files.push_back(open_checked(package.root/"manifest.json",manifest_limit,true));
+            if (hash_handle(files[0].value) != package.manifest_sha)
                 fail("plugin_hash_mismatch","Plugin package changed after registration");
+            for (const auto& file:package.files) {
+                files.push_back(open_checked(package.root/path_from_utf8(file.path),file.limit,true));
+                if (hash_handle(files.back().value)!=file.sha)
+                    fail("plugin_hash_mismatch","Plugin package member changed after registration");
+                if (file.role=="entry" || file.role=="dependency") {
+                    const auto existing=GetModuleHandleW(path_from_utf8(file.path).c_str());
+                    if (existing) {
+                        std::vector<wchar_t> buffer(32768);
+                        const auto length=GetModuleFileNameW(existing,buffer.data(),static_cast<DWORD>(buffer.size()));
+                        if (!length || length>=buffer.size() ||
+                            !path_within(package.root/path_from_utf8(file.path),fs::path(std::wstring(buffer.data(),length))))
+                            fail("plugin_dll_conflict","A DLL basename is already loaded from another location");
+                    }
+                }
+            }
+            if (package.strict_inventory) inventory_package(package);
             fresh_module=LoadLibraryExW(package.entry.c_str(),nullptr,
                 LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
             if (!fresh_module) fail("plugin_load_failed","LoadLibraryExW could not load trusted plugin DLL");
@@ -861,10 +945,13 @@ std::string register_plugin_nodes(NodeRegistry& registry, const PluginHostOption
     }
     std::unordered_map<std::string,std::size_t> plugin_counts;
     std::unordered_map<std::string,std::size_t> type_counts;
+    std::unordered_map<std::string,std::size_t> dll_counts;
     std::set<std::string> builtins;
     for (const auto& descriptor : registry.descriptors()) builtins.insert(descriptor.type_id);
     for (const auto& item : prepared) {
         ++plugin_counts[item.package.plugin_id];
+        for (const auto& file:item.package.files)
+            if (file.role=="entry" || file.role=="dependency") ++dll_counts[folded(file.path)];
         for (const auto& descriptor : item.package.descriptors) ++type_counts[descriptor.type_id];
     }
     for (auto& item : prepared) {
@@ -873,6 +960,9 @@ std::string register_plugin_nodes(NodeRegistry& registry, const PluginHostOption
             auto& package=item.package;
             if (plugin_counts[package.plugin_id] > 1)
                 fail("plugin_duplicate_id","Conflicting plugin identities; none of the involved packages was selected");
+            for (const auto& file:package.files)
+                if ((file.role=="entry" || file.role=="dependency") && dll_counts[folded(file.path)]>1)
+                    fail("plugin_dll_conflict","Conflicting DLL basenames across selected packages");
             NodeRegistry candidate=registry;
             for (const auto& descriptor : package.descriptors) {
                 if (builtins.contains(descriptor.type_id) || type_counts[descriptor.type_id] > 1)

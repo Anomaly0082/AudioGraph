@@ -7,6 +7,7 @@ type Parameter = NonNullable<NodeInfo["parameters"]>[number];
 type Props = {
   node: GraphNode;
   descriptor: NodeInfo | undefined;
+  catalogAvailable?: boolean;
   devices: DeviceCatalog;
   canListDevices: boolean;
   onListDevices: () => void;
@@ -286,6 +287,7 @@ function ParameterField({
 export default function NodeInspector({
   node,
   descriptor,
+  catalogAvailable = false,
   devices,
   canListDevices,
   onListDevices,
@@ -377,7 +379,11 @@ export default function NodeInspector({
           </div>
         ))}
         {!descriptor && (
-          <p className="hint">节点类型未识别；现有参数仅供查看。</p>
+          <p className="hint">
+            {catalogAvailable
+              ? "节点类型不可用，可能缺少插件或版本不兼容。参数已保留，可在 Graph JSON 中编辑；恢复插件后重新校验。"
+              : "连接工作区后读取节点能力；现有参数已保留。"}
+          </p>
         )}
         {descriptor &&
           !descriptor.parameters?.length &&

@@ -17,6 +17,7 @@ mod workflow;
 mod workflow_editor;
 mod workspace_browser;
 mod plugin_snapshot;
+mod plugin_manager;
 mod run_records;
 mod run_history_tools;
 #[cfg(test)]
@@ -69,12 +70,13 @@ fn main() {
         .manage(Arc::new(conversation_store::ConversationStore::default()))
         .manage(Arc::new(run_records::RunStore::default()))
         .manage(Arc::new(commands::ManualRunTracker::default()))
+        .manage(Arc::new(plugin_manager::PluginManager::default()))
         .setup(|app| {
             let manager = app.state::<Arc<backend::BackendManager>>();
             let captured = (|| {
                 let directory = app.path().app_config_dir().map_err(|error| error.to_string())?.join("plugins");
                 let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
-                plugin_snapshot::PluginSnapshot::capture(&directory,&data).map(Arc::new)
+                app.state::<Arc<plugin_manager::PluginManager>>().initialize(&directory,&data)
                     .map_err(|error| format!("插件目录 {}：{error}",directory.display()))
             })();
             // A capture failure is retained by the manager and shown on connection;
@@ -117,6 +119,10 @@ fn main() {
             ,workspace_browser::workspace_browser_list
             ,workspace_browser::workspace_browser_text
             ,workspace_browser::workspace_browser_audio
+            ,plugin_manager::plugin_manager_list
+            ,plugin_manager::plugin_manager_install
+            ,plugin_manager::plugin_manager_set_enabled
+            ,plugin_manager::plugin_manager_uninstall
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

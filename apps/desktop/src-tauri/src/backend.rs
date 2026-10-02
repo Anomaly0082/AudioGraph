@@ -435,7 +435,7 @@ impl BackendManager {
     }
 }
 
-fn fixed_sidecar() -> Result<PathBuf, String> {
+pub(crate) fn fixed_sidecar() -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let directory = executable.parent().ok_or("无法定位应用目录")?;
     let filename = if cfg!(windows) { "control-cli.exe" } else { "control-cli" };

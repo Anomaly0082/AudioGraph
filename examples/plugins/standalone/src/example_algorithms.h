@@ -1,12 +1,17 @@
 #pragma once
 
-#include <cstdint>
-#include <span>
-#include <string>
-
-namespace example_algorithms {
-// Private C++ types never cross the plugin's public C ABI.
-bool gain_block(std::span<const float> input, double factor, std::span<float> output) noexcept;
-bool finite_block(std::span<const float> input) noexcept;
-std::string mock_transcript(std::uint64_t frames, std::uint32_t channels, std::uint32_t sample_rate);
+#include <cstddef>
+#if defined(_WIN32)
+#if defined(EXAMPLE_ALGORITHMS_BUILD)
+#define EXAMPLE_API __declspec(dllexport)
+#else
+#define EXAMPLE_API __declspec(dllimport)
+#endif
+#else
+#define EXAMPLE_API
+#endif
+// Only borrowed buffers and primitives cross the self-owned helper DLL boundary.
+extern "C" {
+EXAMPLE_API bool example_gain_block(const float* input, std::size_t count, double factor, float* output) noexcept;
+EXAMPLE_API bool example_finite_block(const float* input, std::size_t count) noexcept;
 }

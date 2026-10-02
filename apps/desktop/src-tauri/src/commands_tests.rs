@@ -240,10 +240,13 @@ fn concurrent_terminal_queries_and_release_do_not_report_duplicate_record_errors
     let fixture = ManualFixture::new();
     let (task_id,run_id) = fixture.pending(text_graph());
     fixture.wait(&task_id);
-    let barrier = std::sync::Barrier::new(12);
+    // Two of each operation stay within the transport's eight pending slots.
+    // Backpressure is tested separately; exceeding its cap would legitimately
+    // retain a pending run and warn, obscuring this finalization race test.
+    let barrier = std::sync::Barrier::new(8);
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
-        for index in 0..12 {
+        for index in 0..8 {
             let fixture = &fixture;
             let barrier = &barrier;
             let task_id = &task_id;

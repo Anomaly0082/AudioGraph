@@ -1,5 +1,9 @@
 import { useRef, useState } from "react";
-import { confirmDesktop, invokeDesktop } from "./api/desktop";
+import {
+  choosePluginDirectory,
+  confirmDesktop,
+  invokeDesktop,
+} from "./api/desktop";
 import { canCancel, formatError, parseGraph } from "./model";
 import { preparePreset, stateLabels, type PageId } from "./presentation";
 import { useAudioSession } from "./hooks/useAudioSession";
@@ -10,6 +14,7 @@ import { useAgentTools } from "./hooks/useAgentTools";
 import { useRunRecords } from "./hooks/useRunRecords";
 import { useWorkflowEditor } from "./hooks/useWorkflowEditor";
 import { useWorkspaceBrowser } from "./hooks/useWorkspaceBrowser";
+import { usePluginManager } from "./hooks/usePluginManager";
 import AppShell from "./components/AppShell";
 import WorkspacePanel from "./components/WorkspacePanel";
 import WorkbenchPage, { type WorkbenchSetup } from "./pages/WorkbenchPage";
@@ -39,6 +44,14 @@ export default function App() {
   const [viewBusy, setViewBusy] = useState(false);
   const viewBusyRef = useRef(false);
   const session = useAudioSession();
+  const plugins = usePluginManager(
+    {
+      invoke: invokeDesktop,
+      chooseDirectory: choosePluginDirectory,
+      confirm: confirmDesktop,
+    },
+    session.desktop,
+  );
   const draft = useGraphDraft(session.connection?.sessionId ?? null);
   const settings = useAiSettings(invokeDesktop);
   const agent = useAgentTools({
@@ -511,6 +524,7 @@ export default function App() {
         <SettingsPage
           settings={settings}
           session={session}
+          plugins={plugins}
           workflowBusy={agent.busy || workflowEditor.busy}
         />
       )}

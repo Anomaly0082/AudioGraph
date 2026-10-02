@@ -34,6 +34,7 @@ type Pending = { socket: Socket; originalIndex?: number };
 type Props = {
   graph: GraphDocument;
   nodes: NodeInfo[];
+  catalogAvailable?: boolean;
   view: CanvasView;
   onView: (value: CanvasView) => void;
   disabled?: boolean;
@@ -58,6 +59,7 @@ const socketKey = (socket: Socket) =>
 export default function GraphCanvas({
   graph,
   nodes,
+  catalogAvailable = nodes.length > 0,
   view,
   onView,
   disabled,
@@ -581,7 +583,11 @@ export default function GraphCanvas({
                 className="canvas-node-header"
                 disabled={disabled}
                 aria-label={`选择节点 ${card.node.id}`}
-                title="拖动调整位置"
+                title={
+                  !card.descriptor && catalogAvailable
+                    ? `节点类型不可用：${card.node.type}；参数和连接已保留`
+                    : "拖动调整位置"
+                }
                 onClick={() => onView({ ...view, selectedId: card.node.id })}
                 onPointerDown={(event) => {
                   if (event.button !== 0 || disabled) return;
@@ -602,7 +608,10 @@ export default function GraphCanvas({
                 <strong>
                   {card.descriptor?.displayName ?? card.node.type}
                 </strong>
-                <code>{card.node.id}</code>
+                <code>
+                  {card.node.id}
+                  {!card.descriptor && catalogAvailable ? " · 类型不可用" : ""}
+                </code>
               </button>
               <div className="canvas-ports">
                 <div>

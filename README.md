@@ -129,9 +129,20 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 
 ### 实验性节点插件（Windows x64）
 
+外部开发者已使用独立套件实现峰值归一化插件，用户确认实际接入验证通过；证据范围及文档反馈见[外部插件验收记录](docs/plugin-validation.md)。
+
+第三方开发或交给其他AI编程工具时，优先使用独立开发套件，不需要提供整个仓库。从仓库根目录导出到一个尚不存在的绝对路径：
+
+```powershell
+$destination = Join-Path (Get-Location).Path "out/plugin-devkit/AudioGraphPluginSDK-0.1.0-docs-r2"
+cmake "-DOUTPUT_DIR=$destination" -P scripts/export_plugin_devkit.cmake
+```
+
+导出目录包含已安装的SDK、[快速开始](sdk/plugin/README.md)、[节点开发约定](docs/plugin-development.md)、包规范、独立示例和示例回归脚本，可整体移动或转交。已有目录会明确拒绝，不覆盖；重新导出请选择新路径。仓库内只允许导出到build/或out/下，避免把生成文件混入SDK源文件。移位构建验证：`ctest --test-dir build -C Debug -R plugin-devkit-relocated --output-on-failure`。此套件不含主程序、密钥、构建缓存或预编译算法；示例回归不是任意新插件的通用认证。
+
 `sdk/plugin/include/audiograph/plugin.h` 是独立的 C ABI 0.1 头文件，覆盖整段同步节点的描述、能力查询、创建、运行和销毁。普通参数用具名、带类型的 C 值视图传递，不要求插件引入 JSON 解析器。插件内部仍可用 C++ 和自己的算法库；输入只读借用，输出通过同步回调复制到宿主内存。ABI 0.x 尚未冻结，不是沙箱，不承诺任意工具链兼容。
 
-`examples/plugins/standalone/` 是只依赖安装后 SDK 的外部项目：自有辅助库、增益节点和明确标记为模拟的音频转文本节点，没有真实 ASR、HTTP 或 GPU 实现。`tests/plugin_sdk/` 仍是独立C11/C++测试宿主；正式接入现在由 `src/plugin_host.cpp` 完成，通过现有注册表和同步Executor运行，不把插件算法编译进主程序。
+`examples/plugins/standalone/` 是只依赖安装后 SDK 的外部项目：自有辅助DLL、随包增益配置、增益节点和明确标记为模拟的音频转文本节点，没有真实 ASR、HTTP 或 GPU 实现。`tests/plugin_sdk/` 仍是独立C11/C++测试宿主；正式接入现在由 `src/plugin_host.cpp` 完成，通过现有注册表和同步Executor运行，不把插件算法编译进主程序。新版包格式及限制见[插件依赖与资源](docs/plugin-packages.md)。
 
 在 VS2022 Developer PowerShell、Windows x64 下，从仓库根目录运行：
 
@@ -142,9 +153,11 @@ ctest --test-dir build -C Debug -R plugin-sdk-standalone --output-on-failure
 
 该测试会在 `build/plugin-sdk-standalone/` 安装SDK，将示例和测试源码复制到独立目录，再分别配置、编译和通过真实DLL边界调用。示例只拿到安装的头文件与CMake包，不链接 `audio_core`，不请求模型服务、不读取用户音频。生成的实验插件包位于其 `plugin-build/package/Debug/`，包含DLL、节点描述和带SHA256的manifest。正式宿主回归另用 `ctest --test-dir build -C Debug -R plugin-host-tests --output-on-failure`，其前置fixture会自动构建示例包。
 
-SDK也可单独安装后由第三方项目消费：`cmake -S sdk/plugin -B build/sdk`，再执行 `cmake --install build/sdk --prefix <独立SDK目录>`；第三方CMake使用 `find_package(AudioGraphPluginSDK 0.1.0 EXACT CONFIG REQUIRED)` 并链接头文件接口目标 `AudioGraph::PluginSDK`。取消是协作的；原生崩溃隔离、动态文件端口策略、统一资源/凭据服务和图形安装器仍是后续阶段。
+SDK也可单独安装后由第三方项目消费：`cmake -S sdk/plugin -B build/sdk`，再执行 `cmake --install build/sdk --prefix <独立SDK目录>`；第三方CMake使用 `find_package(AudioGraphPluginSDK 0.1.0 EXACT CONFIG REQUIRED)` 并链接头文件接口目标 `AudioGraph::PluginSDK`。取消是协作的；原生崩溃隔离、动态文件端口策略和统一资源/凭据服务仍是后续阶段。
 
-使用方法：关闭软件，把完整示例包复制为本机用户配置目录下 `com.audioprocess.prototype/plugins/example/`（通常在 `%APPDATA%`）。不要把三个文件直接散放在plugins根目录，不要只复制DLL。重启后打开工作区，在设置页查看实际插件目录、可用包和错误；编辑器与AI节点目录自动出现 `org.audiograph.example.gain_v1`、`org.audiograph.example.mock_asr_v1`。可用内置WAV输入/输出连接插件Gain，按普通Graph设置gain_db运行。软件不会自动安装或启用下载来的包；目录内容属于用户明确安装的可信原生代码。
+使用方法：在设置页点击“安装本机文件夹…”，选择完整示例包目录 `build/plugin-sdk-standalone/plugin-build/package/Debug/`，确认可信后安装，重启软件。无需先打开工作区即可管理插件。重启后编辑器与AI节点目录自动出现 `org.audiograph.example.gain_v1`、`org.audiograph.example.mock_asr_v1`。可用内置WAV输入/输出连接插件Gain，按普通Graph设置gain_db运行。也可在关闭软件后手动把完整包放进设置页显示的plugins目录的直接子文件夹；不要散放包内文件、遗漏resources子目录或只复制入口DLL。若已安装旧示例，同名不会覆盖；可先安排卸载并重启，再安装新包并重启，旧包保留备份。
+
+管理器提供下次启动启停和可取消的待卸载，不热更新当前任务。安装/启用会静态校验整个下次启用集合，拒绝重复ID、无效包及超额节点目录；安装不执行DLL，也不覆盖已有包。卸载于下次启动移入应用数据目录的 `plugin-manager/trash/` 备份，不删除音频、运行历史或插件运行数据；若其他实例占用或包已变化则保留并报错。待卸载取消后保持停用。恢复时先将备份中的完整package目录复制到plugins和plugin-manager之外的普通目录，再用“安装本机文件夹…”选择该副本，经过信任确认和静态校验后重启生效；关闭软件后手动放回plugins的包则按默认启用处理。目前不提供覆盖升级、ZIP解包、在线下载或自动清理备份。
 
 软件首次启动会自动创建设置页显示的空插件目录（必要时补齐父目录），但不会自动安装插件，也不会为无插件状态创建运行快照或插件运行数据。目录被同名文件占用、存在链接或不可写时会明确报错，不覆盖或替换已有文件。
 
@@ -153,11 +166,11 @@ SDK也可单独安装后由第三方项目消费：`cmake -S sdk/plugin -B build
 可参考 [plugin-gain.json](examples/graphs/plugin-gain.json)，将内容载入已启用插件的桌面Graph编辑器，在当前工作区准备 `input.wav`；运行会新建 `plugin-gain-output.wav`，重复运行需改输出名称。旧 `graph-demo` 仍只有内置注册表，不用于这个插件示例。
 
 - 应用启动时一次捕获最多16个直接子包的manifest指纹；用户和AI后台共享同一快照，重连不重扫。安装、更新或移除后需要重启。缺manifest、链接目录、扫描超限等快照捕获错误会拒绝连接并给出目录；可读取但内容无效的单包由C++报告诊断，保留内置节点。
-- 静态发现/Graph校验不加载DLL，首次执行才核验ABI、身份及描述并加载；已加载入口/manifest/nodes的文件句柄保持到对应后台进程退出。重复plugin_id/type冲突涉及的包全部拒绝，不按扫描顺序选版本。SHA256用于变化检测，不是签名或可信认证。
-- 当前受理入口DLL+nodes.json两个被manifest指纹固定的文件；复杂依赖/资源清单尚未开放，额外资源或插件自有联网状态不属于已验证的包指纹范围。包内算法可像示例一样静态链接私有库；不承诺任意第三方DLL依赖组合隔离。
+- 静态发现/Graph校验不加载DLL，首次执行才核验ABI、身份及描述并加载；manifest及所有声明成员的文件句柄保持到对应后台进程退出。重复plugin_id/type或DLL基名冲突涉及的包全部拒绝，不按扫描顺序选版本。SHA256用于变化检测，不是签名或可信认证。
+- 包格式v2支持入口DLL、nodes.json、自带辅助DLL及resources/下的资源，所有声明成员纳入指纹与运行前校验，资源根通过既有environment接口提供。辅助DLL须使用插件ID前缀，选用集合内DLL基名冲突明确拒绝；仍不承诺任意第三方DLL依赖组合完全隔离。v1两文件包继续兼容，C ABI不变。当前每个资源/DLL最多256MiB、包声明内容合计1GiB，详细路径/容量规则见[包规范](docs/plugin-packages.md)。
 - 支持整段同步Audio/Text/Number端口及Number/Text/Boolean参数；明确拒绝外部FilePath声明、流式/实时/异步能力。文件读写继续用内置节点组合。插件仍能自行调用本机库或HTTP；原生代码不受AI文件工具权限沙箱约束，不能保证其不上传音频。
 - 为避免单次节点发现撑满AI上下文，完整节点目录（含内置）暂限32KiB；超额包明确拒绝，不静默截断参数。目录分页与更多类型可后续扩展。单次插件输入/音频输出各限256MiB，所有Text输出合计限64KiB，无Audio输出的节点总输出预算也为64KiB；超限明确失败，不把大文本塞断结果通道。调用协作期限60秒，不承诺硬抢占；失控插件可能使当前后台进程中断。
-- 节点目录及运行配置中的node_plugins保存插件ID、实现版本和manifest指纹；不会把私有目录或凭据当作节点元数据发送给AI。安装列表变化、插件缺失或执行失败不会删除原Graph文件，也不声称自动迁移配置。历史版本自动比对、依赖锁定及缺失节点的完整占位编辑体验仍待后续接入。
+- 节点目录及运行配置中的node_plugins保存插件ID、实现版本和manifest指纹；不会把私有目录或凭据当作节点元数据发送给AI。缺失类型在编辑器中保留节点、原参数、连线和导出设置，允许JSON编辑及另存，但不能提交，连线暂为只读。恢复兼容插件并重启后可重新校验；不自动迁移配置。历史版本自动比对及依赖锁定仍待后续接入。
 
 2026-10-02：独立SDK用例在Windows x64 VS2022的Debug与Release均通过，覆盖C11/C++函数表调用、不同CRT下的数据复制、失败/取消与UTF-8边界、CRLF源码描述一致性和包指纹；另有5项现有核心回归通过，完成独立代码审查。
 

@@ -21,6 +21,7 @@ const testFiles = [
   "tests/run-records.test.mjs",
   "tests/task-finalization.test.mjs",
   "tests/conversation.test.mjs",
+  "tests/plugin-manager.test.mjs",
   "tests/workflow-editor.test.mjs",
   "tests/workspace-browser.test.mjs",
 ];

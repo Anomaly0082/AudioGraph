@@ -3,6 +3,16 @@ import type { NodeInfo } from "./types/desktop";
 
 export type GraphEndpoint = { node: string; port: string };
 
+// Discovery is separate from parsing: unknown types must remain losslessly
+// editable/savable, but cannot be submitted against the current catalog.
+export function unavailableGraphNodes(
+  graph: GraphDocument,
+  catalog: NodeInfo[],
+) {
+  const available = new Set(catalog.map((node) => node.typeId));
+  return graph.nodes.filter((node) => !available.has(node.type));
+}
+
 function requireNode(graph: GraphDocument, nodeId: string) {
   const node = graph.nodes.find((item) => item.id === nodeId);
   if (!node) throw new Error(`未知节点：${nodeId}`);

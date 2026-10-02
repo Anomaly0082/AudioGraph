@@ -504,6 +504,33 @@ void test_execution(ag_whole_sync_api gain, ag_whole_sync_api asr,
         "Post-emit cancellation published staged data or returned success");
 }
 
+void test_resource_execution(ag_whole_sync_api gain, const std::string& data_root) {
+    TemporaryDirectory resources;
+    const auto root = utf8(resources.path);
+    const auto env = environment(root,data_root);
+    const std::vector<float> source{0.25f,-0.5f};
+    // Creation is lightweight and succeeds even before a resource exists.
+    auto missing = create(gain,"gain_db",0,env);
+    HostContext missing_context{};
+    const auto absent = run(gain,missing.handle,source,AG_AUDIO,missing_context);
+    check(absent.status == AG_EXECUTION_FAILED && !absent.published,"Missing gain resource did not fail execution");
+    fs::create_directories(resources.path/"resources"/"config");
+    const auto file = resources.path/"resources"/"config"/"gain-scale.txt";
+    for (const auto& content : {std::string("invalid\n"),std::string("nan\n"),std::string(65,'1')}) {
+        { std::ofstream output(file,std::ios::binary); output << content; }
+        auto invalid = create(gain,"gain_db",0,env);
+        HostContext context{};
+        const auto result = run(gain,invalid.handle,source,AG_AUDIO,context);
+        check(result.status == AG_EXECUTION_FAILED && !result.published,"Invalid gain resource did not fail execution");
+    }
+    { std::ofstream output(file,std::ios::binary); output << "2.0\n"; }
+    auto scaled = create(gain,"gain_db",0,env);
+    HostContext context{};
+    const auto result = run(gain,scaled.handle,source,AG_AUDIO,context);
+    check(result.status == AG_OK && result.published && result.audio.size() == source.size()
+        && result.audio[0] == 0.5f && result.audio[1] == -1.0f,"Gain did not consume its package-relative scale resource");
+}
+
 void test_direct_invalid_run(ag_whole_sync_api gain, const ag_instance_environment& env) {
     for (int scenario=0; scenario<3; ++scenario) {
         auto instance = create(gain,"gain_db",0,env);
@@ -551,6 +578,7 @@ int main(int argc, char** argv) {
             data_utf8.data(),data_utf8.size());
         check(c_result == 0,"C11 function-table gain smoke failed");
         test_execution(gain,asr,env);
+        test_resource_execution(gain,data_utf8);
         test_direct_invalid_run(gain,env);
         std::cout << "Plugin SDK standalone ABI host tests passed\n";
         return 0;

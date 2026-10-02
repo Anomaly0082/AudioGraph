@@ -8,12 +8,14 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <winioctl.h>
 #include <bcrypt.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -136,6 +138,7 @@ void copy_package(const fs::path& from, const fs::path& to) {
     fs::create_directory(to);
     for (const auto& entry:fs::directory_iterator(from)) {
         if (entry.is_regular_file()) fs::copy_file(entry.path(),to/entry.path().filename());
+        else if (entry.is_directory()) fs::copy(entry.path(),to/entry.path().filename(),fs::copy_options::recursive);
     }
 }
 
@@ -145,6 +148,144 @@ void run_checks(const fs::path& package) {
     auto flags=options(raw_snapshot,temp.root);
     auto nodes=registry();
     const auto baseline=nodes.descriptors().size();
+    unsigned fixture_index=0;
+    const auto rejected=[&](const auto& mutate) {
+        const auto target=temp.root/("v2-negative-"+std::to_string(fixture_index++));
+        copy_package(package,target);
+        mutate(target);
+        const auto captured=snapshot(temp.root/("negative-"+std::to_string(fixture_index)+".json"),{verbatim(target)});
+        auto candidate=registry();
+        const auto status=Json::parse(register_plugin_nodes(candidate,options(captured,temp.root)));
+        check(status["available"].empty() && status["errors"].size()==1 && candidate.descriptors().size()==baseline,
+            "Invalid v2 package was admitted");
+    };
+    for (const auto member:{"org.audiograph.example.algorithms.dll","resources/config/gain-scale.txt"}) {
+        rejected([&](const fs::path& target){fs::remove(target/member);});
+        rejected([&](const fs::path& target){std::ofstream out(target/member,std::ios::binary|std::ios::app);out<<"tamper";});
+    }
+    rejected([](const fs::path& target){fs::create_directories(target/"resources"/"unlisted");});
+    rejected([](const fs::path& target){std::ofstream out(target/"resources"/"unlisted.txt");out<<"extra";});
+    rejected([](const fs::path& target){
+        Json manifest; {std::ifstream in(target/"manifest.json");in>>manifest;}
+        while(manifest["files"].size()<65) manifest["files"].push_back(manifest["files"][0]);
+        std::ofstream out(target/"manifest.json",std::ios::trunc);out<<manifest.dump();
+    });
+    rejected([](const fs::path& target){
+        const auto path=target/"resources"/"config"/"gain-scale.txt";
+        const auto handle=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        check(handle!=INVALID_HANDLE_VALUE,"Cannot open sparse resource fixture");
+        DWORD returned=0;
+        const auto sparse=DeviceIoControl(handle,FSCTL_SET_SPARSE,nullptr,0,nullptr,0,&returned,nullptr);
+        LARGE_INTEGER end{};end.QuadPart=256ll*1024*1024+1;
+        const auto resized=sparse && SetFilePointerEx(handle,end,nullptr,FILE_BEGIN) && SetEndOfFile(handle);
+        CloseHandle(handle);
+        check(resized,"Cannot create oversized sparse resource fixture");
+    });
+    rejected([](const fs::path& target){
+        Json manifest; {std::ifstream in(target/"manifest.json");in>>manifest;}
+        for(int i=0;i<5;++i) {
+            const auto name="resources/large-"+std::to_string(i)+".bin";
+            const auto path=target/name;
+            const auto handle=CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+            check(handle!=INVALID_HANDLE_VALUE,"Cannot open total-budget sparse fixture");
+            DWORD returned=0;
+            const auto sparse=DeviceIoControl(handle,FSCTL_SET_SPARSE,nullptr,0,nullptr,0,&returned,nullptr);
+            LARGE_INTEGER end{};end.QuadPart=256ll*1024*1024;
+            const auto resized=sparse && SetFilePointerEx(handle,end,nullptr,FILE_BEGIN) && SetEndOfFile(handle);
+            CloseHandle(handle);
+            check(resized,"Cannot create total-budget sparse fixture");
+            manifest["files"].push_back({{"path",name},{"sha256",std::string(64,'0')},{"role","resource"}});
+        }
+        std::ofstream out(target/"manifest.json",std::ios::trunc);out<<manifest.dump();
+    });
+    for (const auto badentry:{"CON.dll","bad name.dll","bad?.dll","bad\t.dll"}) {
+        rejected([&](const fs::path& target){
+            Json manifest; {std::ifstream in(target/"manifest.json");in>>manifest;}
+            manifest["entry"]=badentry;
+            for(auto& file:manifest["files"]) if(file.value("role",std::string{})=="entry") file["path"]=badentry;
+            std::ofstream out(target/"manifest.json",std::ios::trunc);out<<manifest.dump();
+        });
+    }
+    for (const auto badpath:{"resources/../gain-scale.txt","resources/CON/file.txt","resources/a/b/c/d.txt","Resources/config/gain-scale.txt"}) {
+        rejected([&](const fs::path& target){
+            Json manifest; {std::ifstream in(target/"manifest.json");in>>manifest;}
+            for(auto& file:manifest["files"]) if(file.value("role",std::string{})=="resource") file["path"]=badpath;
+            std::ofstream out(target/"manifest.json",std::ios::trunc);out<<manifest.dump();
+        });
+    }
+    rejected([](const fs::path& target){
+        Json manifest; {std::ifstream in(target/"manifest.json");in>>manifest;}
+        auto duplicate=manifest["files"][0];
+        auto path=duplicate["path"].get<std::string>();path[0]=static_cast<char>(std::toupper(path[0]));duplicate["path"]=path;
+        manifest["files"].push_back(duplicate);
+        std::ofstream out(target/"manifest.json",std::ios::trunc);out<<manifest.dump();
+    });
+    const auto legacy=temp.root/"legacy-package";
+    copy_package(package,legacy);
+    Json legacy_manifest; {std::ifstream in(legacy/"manifest.json");in>>legacy_manifest;}
+    legacy_manifest["schema_version"]=1;
+    Json legacy_files=Json::array();
+    for(auto file:legacy_manifest["files"]) if(file["role"]=="entry" || file["role"]=="nodes") {
+        file.erase("role");legacy_files.push_back(file);
+    }
+    legacy_manifest["files"]=legacy_files;
+    {std::ofstream out(legacy/"manifest.json",std::ios::trunc);out<<legacy_manifest.dump();}
+    auto legacy_nodes=registry();
+    const auto legacy_status=Json::parse(register_plugin_nodes(legacy_nodes,options(snapshot(temp.root/"legacy.json",{verbatim(legacy)}),temp.root)));
+    check(legacy_status["errors"].empty() && legacy_status["available"].size()==1,"v1 compatibility registration failed");
+    const auto collision=temp.root/"basename-collision";
+    copy_package(package,collision);
+    Json collision_manifest,collision_catalog;
+    {std::ifstream in(collision/"manifest.json");in>>collision_manifest;}
+    {std::ifstream in(collision/"nodes.json");in>>collision_catalog;}
+    collision_manifest["plugin_id"]="org.audiograph.second";
+    collision_catalog["plugin_id"]="org.audiograph.second";
+    for(auto& node:collision_catalog["nodes"]) {
+        node["plugin"]["id"]="org.audiograph.second";
+        auto id=node["typeId"].get<std::string>();
+        id.replace(0,std::string("org.audiograph.example").size(),"org.audiograph.second");node["typeId"]=id;
+    }
+    {std::ofstream out(collision/"nodes.json",std::ios::trunc);out<<collision_catalog.dump();}
+    for(auto& file:collision_manifest["files"]) {
+        if(file["role"]=="dependency") {
+            const auto old=file["path"].get<std::string>();
+            const auto renamed="org.audiograph.second.algorithms.dll";
+            fs::rename(collision/old,collision/renamed);file["path"]=renamed;
+        }
+        if(file["role"]=="nodes") file["sha256"]=sha256(collision/"nodes.json");
+    }
+    {std::ofstream out(collision/"manifest.json",std::ios::trunc);out<<collision_manifest.dump();}
+    auto collision_nodes=registry();
+    const auto collision_status=Json::parse(register_plugin_nodes(collision_nodes,
+        options(snapshot(temp.root/"collision.json",{verbatim(package),verbatim(collision)}),temp.root)));
+    if (!collision_status["available"].empty()) std::cerr << "Collision fixture report: " << collision_status.dump() << '\n';
+    check(collision_status["available"].empty() && collision_status["errors"].size()==2 &&
+        collision_status["errors"][0]["code"]=="plugin_dll_conflict" &&
+        collision_status["errors"][1]["code"]=="plugin_dll_conflict","DLL basename collision did not reject both packages");
+    for(const auto member:{"org.audiograph.example.algorithms.dll","resources/config/gain-scale.txt"}) {
+        const auto target=temp.root/("changed-after-registration-"+std::to_string(fixture_index++));
+        copy_package(package,target);
+        auto candidate=registry();
+        const auto status=Json::parse(register_plugin_nodes(candidate,
+            options(snapshot(temp.root/("changed-"+std::to_string(fixture_index)+".json"),{verbatim(target)}),temp.root)));
+        check(status["errors"].empty(),"Mutation fixture registration failed");
+        {std::ofstream out(target/member,std::ios::binary|std::ios::app);out<<"tamper";}
+        auto execution=SyncGraphExecutor::compile(graph(0,0),candidate);
+        expect_error([&]{(void)execution.execute();},"plugin_hash_mismatch");
+    }
+    const auto preloaded=temp.root/"preloaded-helper";
+    fs::create_directory(preloaded);
+    fs::copy_file(package/"org.audiograph.example.algorithms.dll",preloaded/"org.audiograph.example.algorithms.dll");
+    const auto helper=LoadLibraryExW((preloaded/"org.audiograph.example.algorithms.dll").c_str(),nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
+    check(helper!=nullptr,"Cannot preload helper fixture");
+    try {
+        auto candidate=registry();
+        const auto status=Json::parse(register_plugin_nodes(candidate,flags));
+        check(status["errors"].empty(),"Preloaded-helper fixture registration failed");
+        auto execution=SyncGraphExecutor::compile(graph(0,0),candidate);
+        expect_error([&]{(void)execution.execute();},"plugin_dll_conflict");
+    } catch(...) {FreeLibrary(helper);throw;}
+    FreeLibrary(helper);
     check(GetModuleHandleW(L"ag_example_plugin.dll") == nullptr,"Plugin DLL loaded before registration");
     const auto report=Json::parse(register_plugin_nodes(nodes,flags));
     check(report["snapshot_id"] == flags.snapshot_sha256 && report["available"].size() == 1 &&

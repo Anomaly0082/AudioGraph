@@ -102,7 +102,10 @@ typedef struct ag_error_sink {
 
 /* Paths are host-selected absolute UTF-8 paths, NOT Graph FilePath parameters.
  * Copy during create if needed later. Resource root is read-only by contract;
- * data root is plugin/workspace specific. These are not OS access restrictions. */
+ * resource_root is the installed package root (not its resources/ subdirectory).
+ * Resolve packaged resources relative to it, never relative to the working directory.
+ * data_root is a separate writable plugin/workspace-specific location.
+ * These are not OS access restrictions. */
 typedef struct ag_instance_environment {
     uint32_t struct_size;
     uint32_t reserved;

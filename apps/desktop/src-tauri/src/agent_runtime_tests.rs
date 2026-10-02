@@ -5,6 +5,10 @@ use super::*;
 mod live_tests;
 
 #[cfg(windows)]
+#[path = "agent_live_recovery_tests.rs"]
+mod live_recovery_tests;
+
+#[cfg(windows)]
 #[path = "agent_end_to_end_tests.rs"]
 mod end_to_end;
 

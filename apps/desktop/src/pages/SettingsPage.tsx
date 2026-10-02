@@ -1,58 +1,28 @@
 import type { AiSettings } from "../hooks/useAiSettings";
 import type { AudioSession } from "../hooks/useAudioSession";
+import type { PluginManager } from "../hooks/usePluginManager";
 import AiSettingsPanel from "../components/AiSettingsPanel";
+import PluginManagerPanel from "../components/PluginManagerPanel";
 
 export default function SettingsPage({
   settings,
   session,
+  plugins,
   workflowBusy,
 }: {
   settings: AiSettings;
   session: AudioSession;
+  plugins: PluginManager;
   workflowBusy: boolean;
 }) {
   return (
     <div className="page-stack settings-page">
       <AiSettingsPanel settings={settings} workflowBusy={workflowBusy} />
-      <section className="panel">
-        <h2>节点插件</h2>
-        {session.connection ? (
-          <>
-            {session.connection.capabilities.plugin_directory && (
-              <p>
-                <code style={{ overflowWrap: "anywhere" }}>
-                  {session.connection.capabilities.plugin_directory.replace(
-                    /^\\\\\?\\/,
-                    "",
-                  )}
-                </code>
-              </p>
-            )}
-            <p className="hint">
-              将可信插件的完整文件夹放入此目录，重启软件后生效。原生插件可能自行访问文件和网络。
-            </p>
-            {(session.connection.capabilities.plugins?.available ?? []).map(
-              (plugin) => (
-                <p key={plugin.plugin_id}>
-                  {plugin.plugin_id} · {plugin.plugin_version}
-                </p>
-              ),
-            )}
-            {!session.connection.capabilities.plugins?.available.length && (
-              <p className="muted">暂无可用外部插件。</p>
-            )}
-            {(session.connection.capabilities.plugins?.errors ?? []).map(
-              (error, index) => (
-                <p className="banner error" role="alert" key={index}>
-                  {error.package}：{error.message}
-                </p>
-              ),
-            )}
-          </>
-        ) : (
-          <p className="muted">打开工作区后查看插件目录与状态。</p>
-        )}
-      </section>
+      <PluginManagerPanel
+        manager={plugins}
+        desktop={session.desktop}
+        startupErrors={session.connection?.capabilities.plugins?.errors ?? []}
+      />
       <section className="panel">
         <div className="section-heading">
           <h2>设备访问</h2>

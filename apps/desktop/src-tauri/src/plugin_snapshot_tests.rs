@@ -174,6 +174,7 @@ fn linked_package_directory_cannot_expand_the_fixed_installation_scope() {
 #[test]
 fn captured_real_sample_package_is_available_to_user_and_related_ai_sidecars_without_rescanning() {
     use crate::backend::{BackendManager,Connection,DisconnectCallback};
+    use crate::plugin_manager::PluginManager;
     use std::sync::Arc;
     let fixture = Fixture::new();
     let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
@@ -181,14 +182,25 @@ fn captured_real_sample_package_is_available_to_user_and_related_ai_sidecars_wit
         project.join("build/plugin-sdk-standalone/plugin-build/package").join(configuration))
         .find(|path| path.join("ag_example_plugin.dll").is_file() && path.join("manifest.json").is_file())
         .expect("Build the standalone installed-SDK example package before integration tests");
-    let installed = fixture.packages().join("example");
-    fs::create_dir_all(&installed).unwrap();
-    for name in ["ag_example_plugin.dll","manifest.json","nodes.json"] {
-        fs::copy(package.join(name),installed.join(name)).unwrap();
+    let package = fs::canonicalize(package).unwrap();
+    // Exercise the same installer as Settings, including private staging and
+    // static validation, then model a restart before any algorithm executes.
+    let installer = PluginManager::default();
+    let original = installer.initialize(&fixture.packages(),&fixture.data()).unwrap();
+    assert!(original.captured_folders().is_empty());
+    let installed_view = installer.install(&package,true).unwrap();
+    assert!(installed_view.restart_required);
+    assert_eq!(installed_view.entries.len(),1);
+    assert!(!installed_view.entries[0].active);
+    let installed = fixture.packages().join("org.audiograph.example");
+    for name in ["manifest.json","nodes.json","ag_example_plugin.dll",
+        "org.audiograph.example.algorithms.dll","resources/config/gain-scale.txt"] {
+        assert_eq!(fs::read(package.join(name)).unwrap(),fs::read(installed.join(name)).unwrap());
     }
     let executable = [project.join("build/Debug/control-cli.exe"),project.join("build/Release/control-cli.exe")]
         .into_iter().find(|path| path.is_file()).expect("Build the plugin-aware fixed control-cli before integration tests");
-    let snapshot = Arc::new(PluginSnapshot::capture(&fixture.packages(),&fixture.data()).unwrap());
+    let restarted = PluginManager::default();
+    let snapshot = restarted.initialize(&fixture.packages(),&fixture.data()).unwrap();
     let shared = BackendManager::default();
     shared.configure_plugin_snapshot(Ok(snapshot.clone())).unwrap();
     let ai = shared.related_manager();
@@ -275,4 +287,22 @@ fn captured_real_sample_package_is_available_to_user_and_related_ai_sidecars_wit
         }
         sidecar.shutdown("Plugin startup snapshot integration complete").unwrap();
     }
+    let current = restarted.list().unwrap();
+    let entry = current.entries.iter().find(|entry| entry.folder == "org.audiograph.example").unwrap();
+    restarted.uninstall(&entry.folder,&entry.revision).unwrap();
+    assert!(installed.is_dir(),"Uninstall is deferred, not a hot removal");
+    let after_uninstall = PluginManager::default();
+    let remaining = after_uninstall.initialize(&fixture.packages(),&fixture.data()).unwrap();
+    assert!(!remaining.captured_folders().contains("org.audiograph.example"));
+    assert!(!installed.exists());
+    let backup = fs::read_dir(fixture.data().join("plugin-manager/trash")).unwrap()
+        .map(|item| item.unwrap().path().join("package"))
+        .find(|path| path.join("org.audiograph.example.algorithms.dll").is_file()).unwrap();
+    assert_eq!(fs::read(backup.join("resources/config/gain-scale.txt")).unwrap(),
+        fs::read(package.join("resources/config/gain-scale.txt")).unwrap());
+    for workspace in ["user-audio","ai-audio"] {
+        assert!(fixture.0.join(workspace).join("result.wav").is_file());
+    }
+    assert!(user_launch.data_root.join("org.audiograph.example").is_dir());
+    assert!(ai_launch.data_root.join("org.audiograph.example").is_dir());
 }

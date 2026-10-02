@@ -21,7 +21,9 @@ if(NOT EXAMPLE_TARGET_ARCH MATCHES "^(x64|x86_64|amd64)$")
     message(FATAL_ERROR "This prototype supports x86_64 only; ARM64 and other targets are not supported")
 endif()
 
-add_library(example_algorithms STATIC src/example_algorithms.cpp)
+add_library(example_algorithms SHARED src/example_algorithms.cpp)
+target_compile_definitions(example_algorithms PRIVATE EXAMPLE_ALGORITHMS_BUILD)
+set_target_properties(example_algorithms PROPERTIES PREFIX "" OUTPUT_NAME "org.audiograph.example.algorithms")
 target_compile_features(example_algorithms PUBLIC cxx_std_20)
 target_include_directories(example_algorithms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set_target_properties(example_algorithms PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -49,12 +51,15 @@ else()
     target_compile_options(ag_example_plugin PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 set_property(TARGET ag_example_plugin APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/config/gain-scale.txt"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package.cmake"
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/manifest.json.in")
 
 add_custom_command(TARGET ag_example_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         "-DPLUGIN_FILE=$<TARGET_FILE:ag_example_plugin>"
+        "-DHELPER_FILE=$<TARGET_FILE:example_algorithms>"
+        "-DRESOURCE_FILE=${CMAKE_CURRENT_SOURCE_DIR}/resources/config/gain-scale.txt"
         "-DPACKAGE_DIR=${CMAKE_CURRENT_BINARY_DIR}/package/$<CONFIG>"
         "-DNODES_FILE=${CMAKE_CURRENT_BINARY_DIR}/generated/nodes.json"
         "-DPLATFORM=${CMAKE_SYSTEM_NAME}"

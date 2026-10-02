@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "plugin_id": "org.audiograph.example",
   "plugin_version": "0.1.0",
   "experimental": true,
@@ -11,7 +11,9 @@
   "nodes": "nodes.json",
   "capabilities": [{"id": "ag.whole_sync/1", "version": 1}],
   "files": [
-    {"path": "@ENTRY@", "sha256": "@ENTRY_SHA256@"},
-    {"path": "nodes.json", "sha256": "@NODES_SHA256@"}
+    {"path": "@ENTRY@", "sha256": "@ENTRY_SHA256@", "role": "entry"},
+    {"path": "nodes.json", "sha256": "@NODES_SHA256@", "role": "nodes"},
+    {"path": "@DEPENDENCY@", "sha256": "@DEPENDENCY_SHA256@", "role": "dependency"},
+    {"path": "resources/config/gain-scale.txt", "sha256": "@RESOURCE_SHA256@", "role": "resource"}
   ]
 }
