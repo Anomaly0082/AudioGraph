@@ -13,6 +13,10 @@ mod live_recovery_tests;
 mod live_selection_tests;
 
 #[cfg(windows)]
+#[path = "agent_live_analysis_tests.rs"]
+mod live_analysis_tests;
+
+#[cfg(windows)]
 #[path = "agent_end_to_end_tests.rs"]
 mod end_to_end;
 

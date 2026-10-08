@@ -5,6 +5,7 @@
 ## 已实现
 
 - 已注册节点：wav_input、gain、peak_meter、wav_output、text_input、text_output。
+- 可安装的离线分析插件：Audio Metrics 输出RMS、dBFS、PCM16削波比例和可配置阈值的低电平时长占比，可直接供Workflow过滤/选优；仅依赖公开SDK，不增加专用页面。见[音频分析插件](docs/plugin-audio-analysis.md)。
 - 离线语音降噪：rnnoise_denoise 封装固定 RNNoise 默认模型，48 kHz 单声道 Audio → Audio；本地 CPU，无需模型 API，保持帧数。使用方法见 [降噪说明](docs/denoise.md)。
 - 离线格式适配：audio_downmix_mono 将双声道平均转单声道，audio_resample 复用 miniaudio 重采样；支持8–192 kHz单/双声道。audio.inspect 查询工作区WAV格式，内置AI可先获取真实元数据再生成提案。见 [格式适配与手动验收](docs/audio-format.md)。
 - 正式流式节点：wav_stream_input、stream_gain、wav_stream_output。相同 Graph JSON 结构，独立 AudioStream 端口和流式工厂。

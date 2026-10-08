@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "inputs": {"source": "input.wav", "folder": "analysis-001", "gains": [-12, -6, 0], "target_rms": 0.15, "silence_threshold_db": -60, "max_silence_ratio": 0.8},
+  "steps": [
+    {"id": "folder", "type": "call", "tool": "directory_create", "args": {"path": {"$ref": "/inputs/folder"}}},
+    {"id": "copy_path", "type": "concat", "parts": [{"$ref": "/inputs/folder"}, "/input.wav"]},
+    {"id": "import", "type": "call", "tool": "file_copy_to_ai", "args": {"source_space": "user", "source_path": {"$ref": "/inputs/source"}, "path": {"$ref": "/steps/copy_path"}}},
+    {"id": "runs", "type": "for_each", "items": {"$ref": "/inputs/gains"}, "steps": [
+      {"id": "gain_db", "type": "set", "value": {"$ref": "/item"}},
+      {"id": "source_index", "type": "set", "value": {"$ref": "/index"}},
+      {"id": "output_path", "type": "concat", "parts": [{"$ref": "/inputs/folder"}, "/candidate-", {"$ref": "/index"}, ".wav"]},
+      {"id": "render", "type": "call", "tool": "graph_run", "args": {"mode": "offline", "graph": {
+        "schema_version": 1,
+        "nodes": [
+          {"id": "input", "type": "wav_input", "parameters": {"path": {"$ref": "/steps/import/path"}}},
+          {"id": "gain", "type": "gain", "parameters": {"gain_db": {"$ref": "/steps/gain_db"}}},
+          {"id": "metrics", "type": "org.audiograph.analysis.audio_metrics_v1", "parameters": {"silence_threshold_db": {"$ref": "/inputs/silence_threshold_db"}}},
+          {"id": "output", "type": "wav_output", "parameters": {"path": {"$ref": "/steps/output_path"}}}
+        ],
+        "connections": [
+          {"from": {"node": "input", "port": "audio"}, "to": {"node": "gain", "port": "audio"}},
+          {"from": {"node": "gain", "port": "audio"}, "to": {"node": "metrics", "port": "audio"}},
+          {"from": {"node": "gain", "port": "audio"}, "to": {"node": "output", "port": "audio"}}
+        ],
+        "exports": [
+          {"name": "file", "node": "output", "port": "path"},
+          {"name": "rms", "node": "metrics", "port": "rms"},
+          {"name": "rms_dbfs", "node": "metrics", "port": "rms_dbfs"},
+          {"name": "clipping_ratio", "node": "metrics", "port": "clipping_ratio"},
+          {"name": "silence_ratio", "node": "metrics", "port": "silence_ratio"}
+        ]
+      }}},
+      {"id": "difference", "type": "compute", "op": "sub", "args": [{"$ref": "/steps/render/result/outputs/rms/value"}, {"$ref": "/inputs/target_rms"}]},
+      {"id": "distance", "type": "compute", "op": "abs", "args": [{"$ref": "/steps/difference"}]}
+    ]},
+    {"id": "unclipped", "type": "filter", "items": {"$ref": "/steps/runs"}, "condition": {"op": "lte", "left": {"$ref": "/item/render/result/outputs/clipping_ratio/value"}, "right": 0}},
+    {"id": "eligible", "type": "filter", "items": {"$ref": "/steps/unclipped"}, "condition": {"op": "lte", "left": {"$ref": "/item/render/result/outputs/silence_ratio/value"}, "right": {"$ref": "/inputs/max_silence_ratio"}}},
+    {"id": "best", "type": "select", "items": {"$ref": "/steps/eligible"}, "by": {"$ref": "/item/distance"}, "order": "min"},
+    {"id": "delivery", "type": "if", "condition": {"op": "eq", "left": {"$ref": "/steps/best/found"}, "right": true},
+      "then": [{"id": "export", "type": "call", "tool": "file_export", "args": {"path": {"$ref": "/steps/best/item/output_path"}, "user_path": {"$ref": "/steps/best/item/output_path"}}}], "else": []}
+  ],
+  "outputs": {"selected": {"$ref": "/steps/best"}, "delivery": {"$ref": "/steps/delivery"}, "candidates": {"$ref": "/steps/runs"}},
+  "limits": {"max_steps": 48, "max_tool_calls": 12, "max_graph_runs": 3, "timeout_ms": 120000}
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "plugin_id": "org.audiograph.analysis",
+  "plugin_version": "0.1.0",
+  "experimental": true,
+  "production_ready": false,
+  "nodes": [{
+    "typeId": "org.audiograph.analysis.audio_metrics_v1",
+    "displayName": "Audio Metrics",
+    "description": "Analyzes finite, nonempty interleaved audio without modifying it. RMS uses all samples across all channels; dBFS is 20*log10(RMS), floored at -120 dB and may be positive. Clipping ratio counts samples outside [-1, 32767/32768], matching PCM16 WAV clipping. Silence ratio is low-level frame coverage, not speech VAD: contiguous nominal 20 ms windows use max(1, (sample_rate+25)/50) frames, RMS across all channels, and RMS <= 10^(silence_threshold_db/20). The final short window uses its actual length; low-level window frames divided by total frames give the ratio.",
+    "execution_domain": "synchronous",
+    "stream_role": "none",
+    "realtime_role": "none",
+    "inputs": [{"id": "audio", "type": "Audio", "required": true}],
+    "outputs": [
+      {"id": "rms", "type": "Number", "required": true},
+      {"id": "rms_dbfs", "type": "Number", "required": true},
+      {"id": "clipping_ratio", "type": "Number", "required": true},
+      {"id": "silence_ratio", "type": "Number", "required": true}
+    ],
+    "parameters": [{"id": "silence_threshold_db", "type": "number", "description": "Finite low-level window RMS threshold; this is not voice activity detection.", "required": false, "default": -60, "minimum": -120, "maximum": 0, "unit": "dB"}],
+    "plugin": {
+      "id": "org.audiograph.analysis",
+      "implementation_version": "0.1.0",
+      "capabilities": [{"id": "ag.whole_sync/1", "version": 1}],
+      "experimental": true,
+      "production_ready": false
+    }
+  }]
+}

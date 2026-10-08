@@ -238,6 +238,95 @@ fn rnnoise_realtime_package_installs_and_is_discovered_without_device_or_ai_exec
 }
 
 #[cfg(windows)]
+#[test]
+fn audio_analysis_plugin_is_discovered_and_used_by_workflow_selection() {
+    use crate::backend::BackendManager;
+    use crate::plugin_manager::PluginManager;
+    use crate::agent_tools::ToolContext;
+    use crate::tool_workspaces::ToolWorkspaces;
+    use crate::run_records::RunStore;
+    use std::sync::{Arc,atomic::AtomicBool};
+    tauri::async_runtime::block_on(async {
+        let fixture=Fixture::new();
+        let project=PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package=fs::canonicalize(project.join("build/audio-analysis-sdk-standalone/plugin-build/package/Debug"))
+            .expect("Build the standalone Audio Metrics plugin first");
+        // Match the application's fixed sidecar locator without touching an installed app.
+        let source=project.join("build/Debug/control-cli.exe");
+        let target=std::env::current_exe().unwrap().parent().unwrap().join("control-cli.exe");
+        match fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(mut file)=>{std::io::copy(&mut fs::File::open(&source).unwrap(),&mut file).unwrap();file.sync_all().unwrap();},
+            Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>{},
+            Err(e)=>panic!("Cannot prepare fixed test sidecar: {e}"),
+        }
+        assert_eq!(digest(&fs::read(&source).unwrap()),digest(&fs::read(&target).unwrap()));
+        let installer=PluginManager::default();
+        installer.initialize(&fixture.packages(),&fixture.data()).unwrap();
+        assert!(installer.install(&package,true).unwrap().restart_required);
+        let restarted=PluginManager::default();
+        let snapshot=restarted.initialize(&fixture.packages(),&fixture.data()).unwrap();
+        let manager=Arc::new(BackendManager::default());
+        manager.configure_plugin_snapshot(Ok(snapshot)).unwrap();
+        let workspace=fixture.workspace("analysis");
+        let info=manager.connect(workspace.to_string_lossy().into_owned(),false,false,Arc::new(|_|{})).unwrap();
+        let frames=1920_u32;let data_bytes=frames*2;
+        let mut wav=Vec::new();
+        wav.extend_from_slice(b"RIFF");wav.extend_from_slice(&(36+data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&48000_u32.to_le_bytes());wav.extend_from_slice(&96000_u32.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");wav.extend_from_slice(&data_bytes.to_le_bytes());
+        for i in 0..frames { let sample:i16=if i<960 {0} else if i%2==0 {16384} else {-16384};wav.extend_from_slice(&sample.to_le_bytes()); }
+        fs::write(workspace.join("input.wav"),&wav).unwrap();
+        let spaces=ToolWorkspaces::new(&workspace,&fixture.data()).unwrap();
+        let mut tools=ToolContext::new(spaces,manager.clone(),info.session_id)
+            .with_records(Arc::new(RunStore::default()),fixture.data());
+        let cancel=AtomicBool::new(false);
+        let catalog=tools.dispatch("workflow","nodes_list",&serde_json::json!({}),&cancel).await.unwrap();
+        let node=catalog["nodes"].as_array().unwrap().iter()
+            .find(|node|node["typeId"]=="org.audiograph.analysis.audio_metrics_v1").expect("Plugin absent from AI catalog");
+        assert_eq!(node["outputs"].as_array().unwrap().len(),4);
+        let program=include_str!("../../../../examples/workflows/analysis-selection.workflow.json");
+        tools.dispatch("workflow","file_write_text",&serde_json::json!({"path":"metrics.workflow.json","content":program}),&cancel).await.unwrap();
+        let args=serde_json::json!({"space":"ai","path":"metrics.workflow.json"});
+        assert_eq!(tools.dispatch("workflow","workflow_validate",&args,&cancel).await.unwrap()["valid"],true);
+        assert!(!workspace.join("analysis-001").exists());
+        let result=tools.dispatch("workflow","workflow_run",&args,&cancel).await.unwrap();
+        assert_eq!(result["state"],"succeeded","{result}");
+        assert_eq!(result["graph_runs"],3);
+        for (run,gain) in result["outputs"]["candidates"].as_array().unwrap().iter().zip([-12.0_f64,-6.0,0.0]) {
+            let metrics=&run["render"]["result"]["outputs"];
+            let expected=0.125_f64.sqrt()*10.0_f64.powf(gain/20.0);
+            assert!((metrics["rms"]["value"].as_f64().unwrap()-expected).abs()<1e-6);
+            assert!((metrics["rms_dbfs"]["value"].as_f64().unwrap()-20.0*expected.log10()).abs()<1e-4);
+            assert_eq!(metrics["clipping_ratio"]["value"].as_f64(),Some(0.0));
+            assert_eq!(metrics["silence_ratio"]["value"].as_f64(),Some(0.5));
+        }
+        assert_eq!(result["outputs"]["selected"]["found"],true);
+        assert_eq!(result["outputs"]["selected"]["item"]["gain_db"].as_f64(),Some(-6.0));
+        assert_eq!(fs::read_dir(workspace.join("analysis-001")).unwrap().count(),1);
+        assert_eq!(fs::read(workspace.join("analysis-001/candidate-1.wav")).unwrap(),fs::read(tools.spaces.ai_root.join("analysis-001/candidate-1.wav")).unwrap());
+        let rejected=tools.dispatch("workflow","workflow_run",&serde_json::json!({
+            "space":"ai","path":"metrics.workflow.json","inputs":{"folder":"analysis-rejected","max_silence_ratio":0.4}
+        }),&cancel).await.unwrap();
+        assert_eq!(rejected["state"],"succeeded","{rejected}");
+        assert_eq!(rejected["outputs"]["selected"]["found"],false);
+        assert!(!workspace.join("analysis-rejected").exists(),"Rejected candidates must not be exported");
+        let clipped=tools.dispatch("workflow","workflow_run",&serde_json::json!({
+            "space":"ai","path":"metrics.workflow.json","inputs":{"folder":"analysis-clipped","gains":[0,12]}
+        }),&cancel).await.unwrap();
+        assert_eq!(clipped["state"],"succeeded","{clipped}");
+        assert_eq!(clipped["outputs"]["candidates"][1]["render"]["result"]["outputs"]["clipping_ratio"]["value"].as_f64(),Some(0.5));
+        assert_eq!(clipped["step_results"]["unclipped"].as_array().unwrap().len(),1);
+        assert_eq!(clipped["outputs"]["selected"]["item"]["gain_db"].as_f64(),Some(0.0));
+        assert_eq!(fs::read_dir(workspace.join("analysis-clipped")).unwrap().count(),1);
+        assert_eq!(fs::read(workspace.join("input.wav")).unwrap(),wav);
+        manager.shutdown().unwrap();
+    });
+}
+
+#[cfg(windows)]
 fn check_realtime_package(relative_package: &str, type_id: &str) {
     use crate::backend::{BackendManager, Connection};
     use crate::plugin_manager::PluginManager;

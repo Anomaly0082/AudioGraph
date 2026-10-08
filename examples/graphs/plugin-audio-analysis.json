@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "input", "type": "wav_input", "parameters": {"path": "input.wav"}},
+    {"id": "metrics", "type": "org.audiograph.analysis.audio_metrics_v1", "parameters": {"silence_threshold_db": -60}}
+  ],
+  "connections": [{"from": {"node": "input", "port": "audio"}, "to": {"node": "metrics", "port": "audio"}}],
+  "exports": [
+    {"name": "rms", "node": "metrics", "port": "rms"},
+    {"name": "rms_dbfs", "node": "metrics", "port": "rms_dbfs"},
+    {"name": "clipping_ratio", "node": "metrics", "port": "clipping_ratio"},
+    {"name": "silence_ratio", "node": "metrics", "port": "silence_ratio"}
+  ]
+}

@@ -209,6 +209,21 @@ if(BUILD_TESTING AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC
     add_test(NAME realtime-plugin-host-sample-tests COMMAND realtime-plugin-host-tests
         "${CMAKE_CURRENT_BINARY_DIR}/realtime-plugin-sdk-standalone/plugin-build/package/$<CONFIG>")
     set_tests_properties(realtime-plugin-host-sample-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED realtime_plugin_sdk_package)
+    add_test(NAME audio-analysis-sdk-standalone COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/audio-analysis-sdk-standalone"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DPLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DCONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/audio_analysis_sdk_standalone.cmake")
+    set_tests_properties(audio-analysis-sdk-standalone PROPERTIES TIMEOUT 180 FIXTURES_SETUP audio_analysis_sdk_package)
+    add_executable(audio-analysis-host-tests tests/audio_analysis_host_tests.cpp)
+    target_link_libraries(audio-analysis-host-tests PRIVATE audio_plugins audio_graph_io audio_core nlohmann_json::nlohmann_json bcrypt)
+    target_compile_options(audio-analysis-host-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    add_test(NAME audio-analysis-host-tests COMMAND audio-analysis-host-tests
+        "${CMAKE_CURRENT_BINARY_DIR}/audio-analysis-sdk-standalone/plugin-build/package/$<CONFIG>")
+    set_tests_properties(audio-analysis-host-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED audio_analysis_sdk_package)
     add_test(NAME rnnoise-realtime-sdk-standalone COMMAND ${CMAKE_COMMAND}
         "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/rnnoise-realtime-sdk-standalone"
