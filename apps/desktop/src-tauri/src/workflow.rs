@@ -57,6 +57,10 @@ impl Default for Limits {
 #[derive(Clone, Debug)]
 enum StepKind {
     Set(Value),
+    Compute { op: String, args: Vec<Value> },
+    Concat { parts: Vec<Value> },
+    Filter { items: Value, condition: Condition },
+    Select { items: Value, by: Value, order: String },
     Call { tool: String, args: Value },
     ForEach { items: Value, steps: Vec<Step> },
     If { condition: Condition, then_steps: Vec<Step>, else_steps: Vec<Step> },
@@ -248,6 +252,34 @@ fn parse_steps(v: &Value, inputs: &Map<String, Value>, outer: &HashSet<String>,
                 check_expr(v, inputs, &visible, in_loop, &format!("{source}/value"), 0)?;
                 StepKind::Set(v.clone())
             }
+            "compute" => {
+                allowed(o, &["id", "type", "op", "args"], &source)?;
+                let op_path = format!("{source}/op");
+                let op = string(required(o, "op", &source)?, &op_path)?;
+                if !["add", "sub", "mul", "div", "abs"].contains(&op) {
+                    return Err(WorkflowError::new("invalid_operator", format!("unsupported operator {op}"), op_path));
+                }
+                let args_path = format!("{source}/args");
+                let args_value = required(o, "args", &source)?;
+                let args = args_value.as_array().ok_or_else(|| WorkflowError::new("invalid_type", "compute args must be an array", &args_path))?;
+                let arity = if op == "abs" { 1 } else { 2 };
+                if args.len() != arity {
+                    return Err(WorkflowError::new("invalid_arity", format!("{op} requires exactly {arity} arguments"), args_path));
+                }
+                check_expr(args_value, inputs, &visible, in_loop, &args_path, 0)?;
+                StepKind::Compute { op: op.into(), args: args.clone() }
+            }
+            "concat" => {
+                allowed(o, &["id", "type", "parts"], &source)?;
+                let parts_path = format!("{source}/parts");
+                let parts_value = required(o, "parts", &source)?;
+                let parts = parts_value.as_array().ok_or_else(|| WorkflowError::new("invalid_type", "concat parts must be an array", &parts_path))?;
+                if parts.len() > 64 {
+                    return Err(WorkflowError::new("item_limit", "concat permits at most 64 parts", parts_path));
+                }
+                check_expr(parts_value, inputs, &visible, in_loop, &parts_path, 0)?;
+                StepKind::Concat { parts: parts.clone() }
+            }
             "call" => {
                 allowed(o, &["id", "type", "tool", "args"], &source)?;
                 let tool = string(required(o, "tool", &source)?, &format!("{source}/tool"))?;
@@ -256,6 +288,26 @@ fn parse_steps(v: &Value, inputs: &Map<String, Value>, outer: &HashSet<String>,
                 object(args, &format!("{source}/args"))?;
                 check_expr(args, inputs, &visible, in_loop, &format!("{source}/args"), 0)?;
                 StepKind::Call { tool: tool.into(), args: args.clone() }
+            }
+            "filter" => {
+                allowed(o, &["id", "type", "items", "condition"], &source)?;
+                let items = required(o, "items", &source)?;
+                check_expr(items, inputs, &visible, in_loop, &format!("{source}/items"), 0)?;
+                let condition = parse_condition(required(o, "condition", &source)?, inputs, &visible, true, &format!("{source}/condition"))?;
+                StepKind::Filter { items: items.clone(), condition }
+            }
+            "select" => {
+                allowed(o, &["id", "type", "items", "by", "order"], &source)?;
+                let items = required(o, "items", &source)?;
+                check_expr(items, inputs, &visible, in_loop, &format!("{source}/items"), 0)?;
+                let by = required(o, "by", &source)?;
+                check_expr(by, inputs, &visible, true, &format!("{source}/by"), 0)?;
+                let order_path = format!("{source}/order");
+                let order = string(required(o, "order", &source)?, &order_path)?;
+                if !["min", "max"].contains(&order) {
+                    return Err(WorkflowError::new("invalid_order", format!("unsupported order {order}"), order_path));
+                }
+                StepKind::Select { items: items.clone(), by: by.clone(), order: order.into() }
             }
             "for_each" => {
                 allowed(o, &["id", "type", "items", "steps"], &source)?;
@@ -290,6 +342,34 @@ fn parse_steps(v: &Value, inputs: &Map<String, Value>, outer: &HashSet<String>,
         visible.insert(id.into());
     }
     Ok(result)
+}
+
+fn parse_condition(v: &Value, inputs: &Map<String, Value>, visible: &HashSet<String>,
+                   in_loop: bool, path: &str) -> Result<Condition, WorkflowError> {
+    let o = object(v, path)?;
+    allowed(o, &["op", "left", "right"], path)?;
+    let op = string(required(o, "op", path)?, &format!("{path}/op"))?;
+    if !["eq", "ne", "lt", "lte", "gt", "gte"].contains(&op) {
+        return Err(WorkflowError::new("invalid_operator", format!("unsupported operator {op}"), format!("{path}/op")));
+    }
+    let left = required(o, "left", path)?;
+    let right = required(o, "right", path)?;
+    check_expr(left, inputs, visible, in_loop, &format!("{path}/left"), 0)?;
+    check_expr(right, inputs, visible, in_loop, &format!("{path}/right"), 0)?;
+    Ok(Condition { op: op.into(), left: left.clone(), right: right.clone() })
+}
+
+fn compare_condition(op: &str, left: &Value, right: &Value,
+                     left_path: &str, right_path: &str) -> Result<bool, WorkflowError> {
+    Ok(match op {
+        "eq" => left == right,
+        "ne" => left != right,
+        op => {
+            let a = left.as_f64().filter(|v| v.is_finite()).ok_or_else(|| WorkflowError::new("invalid_type", "ordered comparison requires finite numbers", left_path))?;
+            let b = right.as_f64().filter(|v| v.is_finite()).ok_or_else(|| WorkflowError::new("invalid_type", "ordered comparison requires finite numbers", right_path))?;
+            match op { "lt" => a < b, "lte" => a <= b, "gt" => a > b, "gte" => a >= b, _ => unreachable!() }
+        }
+    })
 }
 
 pub fn validate(document: &Value) -> Result<Workflow, WorkflowError> {
@@ -404,6 +484,27 @@ struct Runner<'a> {
     limits: &'a Limits,
     report: WorkflowReport,
 }
+
+fn compute_number(value: &Value, path: &str) -> Result<f64, WorkflowError> {
+    const MAX_EXACT_INTEGER: u64 = (1u64 << 53) - 1;
+    let number = value.as_number().ok_or_else(|| WorkflowError::new("invalid_type", "compute requires finite numbers", path))?;
+    if number.as_i64().is_some_and(|n| n < -(MAX_EXACT_INTEGER as i64) || n > MAX_EXACT_INTEGER as i64)
+        || number.as_u64().is_some_and(|n| n > MAX_EXACT_INTEGER) {
+        return Err(WorkflowError::new("numeric_precision", "integer exceeds the exact f64 input range", path));
+    }
+    number.as_f64().filter(|n| n.is_finite())
+        .ok_or_else(|| WorkflowError::new("invalid_type", "compute requires finite numbers", path))
+}
+
+// Content bytes only; the caller separately accounts for the two JSON quotes.
+fn json_string_content_bytes(value: &str) -> usize {
+    value.bytes().map(|byte| match byte {
+        b'"' | b'\\' | b'\x08' | b'\t' | b'\n' | b'\x0c' | b'\r' => 2,
+        0..=31 => 6,
+        _ => 1,
+    }).sum()
+}
+
 impl Runner<'_> {
     fn check(&self, path: &str) -> Result<(), WorkflowError> {
         if self.cancel.load(Ordering::Acquire) {
@@ -477,6 +578,49 @@ impl Runner<'_> {
         self.report.steps_executed += 1;
         let value = match &step.kind {
             StepKind::Set(expr) => ctx.eval(expr, path)?,
+            StepKind::Compute { op, args } => {
+                let mut numbers = Vec::with_capacity(args.len());
+                for (i, expr) in args.iter().enumerate() {
+                    let arg_path = format!("{path}/args/{i}");
+                    self.check(&arg_path)?;
+                    numbers.push(compute_number(&ctx.eval(expr, &arg_path)?, &arg_path)?);
+                }
+                let result = match op.as_str() {
+                    "add" => numbers[0] + numbers[1],
+                    "sub" => numbers[0] - numbers[1],
+                    "mul" => numbers[0] * numbers[1],
+                    "div" => {
+                        if numbers[1] == 0.0 {
+                            return Err(WorkflowError::new("division_by_zero", "division by zero", format!("{path}/args/1")));
+                        }
+                        numbers[0] / numbers[1]
+                    }
+                    "abs" => numbers[0].abs(),
+                    _ => unreachable!(),
+                };
+                let number = serde_json::Number::from_f64(result).ok_or_else(|| WorkflowError::new("numeric_overflow", "compute result is not finite", format!("{path}/op")))?;
+                Value::Number(number)
+            }
+            StepKind::Concat { parts } => {
+                let mut result = String::new();
+                let mut used = 2usize;
+                for (i, expr) in parts.iter().enumerate() {
+                    let part_path = format!("{path}/parts/{i}");
+                    self.check(&part_path)?;
+                    let value = ctx.eval(expr, &part_path)?;
+                    let text = match value {
+                        Value::String(text) => text,
+                        Value::Number(number) => number.to_string(),
+                        _ => return Err(WorkflowError::new("invalid_type", "concat parts must be strings or numbers", part_path)),
+                    };
+                    used = used.saturating_add(json_string_content_bytes(&text));
+                    if used > MAX_VALUE {
+                        return Err(WorkflowError::new("value_limit", "concatenated string exceeds 256 KiB", part_path));
+                    }
+                    result.push_str(&text);
+                }
+                Value::String(result)
+            }
             StepKind::Call { tool, args } => {
                 if self.report.tool_calls >= self.limits.max_tool_calls {
                     return Err(WorkflowError::new("tool_limit", "tool call budget exhausted", path));
@@ -494,6 +638,64 @@ impl Runner<'_> {
                 let value = result.map_err(|message| WorkflowError::new("tool_failed", message, path))?;
                 object(&value, path)?;
                 value
+            }
+            StepKind::Filter { items, condition } => {
+                let items_path = format!("{path}/items");
+                let items = ctx.eval(items, &items_path)?;
+                let array = items.as_array().ok_or_else(|| WorkflowError::new("invalid_type", "filter items must be an array", &items_path))?;
+                if array.len() > MAX_ITEMS { return Err(WorkflowError::new("item_limit", "filter permits at most 16 items", &items_path)); }
+                let mut collected = Vec::with_capacity(array.len());
+                let mut used = 2usize;
+                for (i, item) in array.iter().enumerate() {
+                    let item_path = format!("{items_path}/{i}");
+                    self.check(&item_path)?;
+                    let old_item = ctx.item.replace(item.clone());
+                    let old_index = ctx.index.replace(i);
+                    let chosen = (|| {
+                        let left_path = format!("{item_path}/condition/left");
+                        let right_path = format!("{item_path}/condition/right");
+                        let left = ctx.eval(&condition.left, &left_path)?;
+                        let right = ctx.eval(&condition.right, &right_path)?;
+                        compare_condition(&condition.op, &left, &right, &left_path, &right_path)
+                    })();
+                    ctx.item = old_item;
+                    ctx.index = old_index;
+                    if chosen? {
+                        used = used.saturating_add(bytes(item)).saturating_add(usize::from(!collected.is_empty()));
+                        if used > MAX_VALUE {
+                            return Err(WorkflowError::new("value_limit", "filtered array exceeds 256 KiB", &item_path));
+                        }
+                        collected.push(item.clone());
+                    }
+                }
+                Value::Array(collected)
+            }
+            StepKind::Select { items, by, order } => {
+                let items_path = format!("{path}/items");
+                let items = ctx.eval(items, &items_path)?;
+                let array = items.as_array().ok_or_else(|| WorkflowError::new("invalid_type", "select items must be an array", &items_path))?;
+                if array.len() > MAX_ITEMS { return Err(WorkflowError::new("item_limit", "select permits at most 16 items", &items_path)); }
+                let mut best: Option<(usize, f64, Value)> = None;
+                for (i, item) in array.iter().enumerate() {
+                    let item_path = format!("{items_path}/{i}");
+                    self.check(&item_path)?;
+                    let old_item = ctx.item.replace(item.clone());
+                    let old_index = ctx.index.replace(i);
+                    let score_path = format!("{item_path}/by");
+                    let score = ctx.eval(by, &score_path)
+                        .and_then(|value| compute_number(&value, &score_path).map(|number| (number, value)));
+                    ctx.item = old_item;
+                    ctx.index = old_index;
+                    let (number, value) = score?;
+                    let better = best.as_ref().map_or(true, |(_, previous, _)| {
+                        if order == "min" { number < *previous } else { number > *previous }
+                    });
+                    if better { best = Some((i, number, value)); }
+                }
+                match best {
+                    Some((index, _, score)) => json!({"found": true, "item": array[index].clone(), "index": index, "score": score}),
+                    None => json!({"found": false, "item": null, "index": null, "score": null}),
+                }
             }
             StepKind::ForEach { items, steps } => {
                 let items = ctx.eval(items, path)?;
@@ -515,15 +717,7 @@ impl Runner<'_> {
             StepKind::If { condition, then_steps, else_steps } => {
                 let left = ctx.eval(&condition.left, path)?;
                 let right = ctx.eval(&condition.right, path)?;
-                let chosen = match condition.op.as_str() {
-                    "eq" => left == right,
-                    "ne" => left != right,
-                    op => {
-                        let a = left.as_f64().filter(|v| v.is_finite()).ok_or_else(|| WorkflowError::new("invalid_type", "ordered comparison requires finite numbers", path))?;
-                        let b = right.as_f64().filter(|v| v.is_finite()).ok_or_else(|| WorkflowError::new("invalid_type", "ordered comparison requires finite numbers", path))?;
-                        match op { "lt" => a < b, "lte" => a <= b, "gt" => a > b, "gte" => a >= b, _ => unreachable!() }
-                    }
-                };
+                let chosen = compare_condition(&condition.op, &left, &right, path, path)?;
                 let branch = if chosen { "then" } else { "else" };
                 let branch_steps = if chosen { then_steps } else { else_steps };
                 let results = self.run_steps(branch_steps, ctx, format!("{path}/{branch}")).await?;
@@ -537,7 +731,7 @@ impl Runner<'_> {
 }
 impl StepKind {
     fn name(&self) -> &'static str {
-        match self { Self::Set(_) => "set", Self::Call { .. } => "call", Self::ForEach { .. } => "for_each", Self::If { .. } => "if" }
+        match self { Self::Set(_) => "set", Self::Compute { .. } => "compute", Self::Concat { .. } => "concat", Self::Filter { .. } => "filter", Self::Select { .. } => "select", Self::Call { .. } => "call", Self::ForEach { .. } => "for_each", Self::If { .. } => "if" }
     }
     fn tool(&self) -> Option<&str> {
         match self { Self::Call { tool, .. } => Some(tool), _ => None }
@@ -611,3 +805,11 @@ pub async fn run(workflow: &Workflow, inputs: Option<&Value>, host: &mut dyn Wor
 #[cfg(test)]
 #[path = "workflow_tests.rs"]
 mod workflow_tests;
+
+#[cfg(test)]
+#[path = "workflow_value_tests.rs"]
+mod workflow_value_tests;
+
+#[cfg(test)]
+#[path = "workflow_selection_tests.rs"]
+mod workflow_selection_tests;

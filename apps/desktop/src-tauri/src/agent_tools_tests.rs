@@ -3,6 +3,201 @@ use std::sync::atomic::AtomicU64;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(windows)]
+#[test]
+fn real_cpp_select_gain_workflow_exports_only_an_unclipped_winner() {
+    use crate::backend::{Connection,DisconnectCallback};
+    tauri::async_runtime::block_on(async {
+        let executable_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let executable = [executable_root.join("build/Debug/control-cli.exe"),executable_root.join("build/Release/control-cli.exe")]
+            .into_iter().find(|path| path.is_file()).expect("Build the C++ control-cli before running integration tests");
+        // Fresh temporary workspaces keep both scenarios independent of devices and user files.
+        for gains in [json!([-12,0,12]),json!([12])] {
+            let (root,spaces) = spaces();
+            let mut wav = vec![
+                b'R',b'I',b'F',b'F',44,0,0,0,b'W',b'A',b'V',b'E',b'f',b'm',b't',b' ',
+                16,0,0,0,1,0,1,0,0x44,0xac,0,0,0x88,0x58,1,0,2,0,16,0,
+                b'd',b'a',b't',b'a',8,0,0,0,
+            ];
+            for sample in [16384_i16,-16384,4096,-4096] { wav.extend_from_slice(&sample.to_le_bytes()); }
+            std::fs::write(spaces.user_root.join("input.wav"),&wav).unwrap();
+            let mut program: Value = serde_json::from_str(include_str!("../../../../examples/workflows/select-gain.workflow.json")).unwrap();
+            program["inputs"]["gains"] = gains.clone();
+            std::fs::write(spaces.user_root.join("select.workflow.json"),program.to_string()).unwrap();
+            let callback: DisconnectCallback = Arc::new(|_| {});
+            let shared = Arc::new(BackendManager::with_test_connection(Connection::spawn(
+                &executable,spaces.user_root.clone(),"select-user".into(),false,false,callback.clone()).unwrap()));
+            let owned = Arc::new(BackendManager::with_test_connection(Connection::spawn(
+                &executable,spaces.ai_root.clone(),"select-ai".into(),false,false,callback).unwrap()));
+            let store = Arc::new(RunStore::default());
+            let app_data = root.join("data");
+            let mut context = ToolContext::new(spaces,shared.clone(),"select-user".into())
+                .with_records(store.clone(),app_data.clone());
+            context.owned = Some((owned.clone(),"select-ai".into()));
+            let cancel = AtomicBool::new(false);
+            let args = json!({"space":"user","path":"select.workflow.json"});
+            let validated = context.dispatch("workflow","workflow_validate",&args,&cancel).await.unwrap();
+            assert_eq!(validated["valid"],true,"{validated}");
+            assert!(!context.spaces.ai_root.join("select-gain-001").exists());
+            assert!(!context.spaces.user_root.join("select-gain-001").exists());
+            assert!(store.list(&context.spaces,&app_data).unwrap().records.is_empty());
+            let report = context.dispatch("workflow","workflow_run",&args,&cancel).await.unwrap();
+            assert_eq!(report["state"],"succeeded","{report}");
+            let count = gains.as_array().unwrap().len();
+            assert_eq!(report["graph_runs"].as_u64(),Some(count as u64));
+            let runs = report["outputs"]["all_results"].as_array().unwrap();
+            assert_eq!(runs.len(),count);
+            for (index,(run,gain)) in runs.iter().zip(gains.as_array().unwrap()).enumerate() {
+                assert_eq!(&run["gain_db"],gain);
+                assert_eq!(run["source_index"].as_u64(),Some(index as u64));
+                let gain = gain.as_f64().unwrap();
+                let path = format!("select-gain-001/gain-{}.wav",gain as i32);
+                assert_eq!(run["output_path"],path);
+                assert_eq!(run["render"]["state"],"succeeded");
+                let outputs = &run["render"]["result"]["outputs"];
+                let peak = outputs["peak"]["value"].as_f64().unwrap();
+                let expected = 0.5*10.0_f64.powf(gain/20.0);
+                assert!((peak-expected).abs() < 0.0001,"gain {gain}: peak {peak}, expected {expected}");
+                let clips = outputs["clipped_samples"]["value"].as_f64().unwrap();
+                assert_eq!(clips > 0.0,gain == 12.0);
+                assert!((run["peak_delta"].as_f64().unwrap()-(peak-0.4)).abs() < 1e-12);
+                assert!((run["distance"].as_f64().unwrap()-(peak-0.4).abs()).abs() < 1e-12);
+                assert!(outputs["file"]["value"].as_str().unwrap().replace('\\',"/").ends_with(&path));
+                let ai_bytes = std::fs::read(context.spaces.ai_root.join(&path)).unwrap();
+                assert!(ai_bytes.starts_with(b"RIFF"));
+                let child = store.load(&context.spaces,&app_data,run["render"]["run_id"].as_str().unwrap()).unwrap();
+                assert_eq!(child.configuration["graph"]["nodes"][1]["parameters"]["gain_db"].as_f64(),Some(gain));
+                assert!(child.files.iter().any(|file| file.space == "ai" && file.path == path && file.role == "output" && file.sha256.is_some()));
+                if count == 3 && gain == 0.0 {
+                    assert_eq!(std::fs::read(context.spaces.user_root.join(&path)).unwrap(),ai_bytes);
+                } else {
+                    assert!(!context.spaces.user_root.join(&path).exists());
+                }
+            }
+            let export_count = report["trace"].as_array().unwrap().iter()
+                .filter(|entry| entry["id"] == "export").count();
+            let selected = &report["outputs"]["selected"];
+            if count == 3 {
+                assert_eq!(report["tool_calls"],6);
+                assert_eq!(selected["found"],true);
+                assert_eq!(selected["item"],runs[1]);
+                assert_eq!(selected["index"],1);
+                assert_eq!(selected["score"],runs[1]["distance"]);
+                assert_eq!(report["step_results"]["eligible"],json!([runs[0],runs[1]]));
+                assert!(runs[1]["distance"].as_f64().unwrap() < runs[0]["distance"].as_f64().unwrap());
+                assert_eq!(report["outputs"]["delivery"]["branch"],"then");
+                assert_eq!(report["outputs"]["delivery"]["steps"]["export"]["path"],"select-gain-001/gain-0.wav");
+                assert_eq!(export_count,1);
+                assert_eq!(std::fs::read_dir(context.spaces.user_root.join("select-gain-001")).unwrap().count(),1);
+            } else {
+                assert_eq!(report["tool_calls"],3);
+                assert_eq!(*selected,json!({"found":false,"item":null,"index":null,"score":null}));
+                assert_eq!(report["step_results"]["eligible"],json!([]));
+                assert_eq!(report["outputs"]["delivery"],json!({"branch":"else","steps":{}}));
+                assert_eq!(export_count,0);
+                assert!(!context.spaces.user_root.join("select-gain-001").exists());
+            }
+            assert_eq!(std::fs::read_dir(context.spaces.ai_root.join("select-gain-001")).unwrap().count(),count+1);
+            assert_eq!(std::fs::read(context.spaces.user_root.join("input.wav")).unwrap(),wav);
+            assert_eq!(std::fs::read(context.spaces.ai_root.join("select-gain-001/input.wav")).unwrap(),wav);
+            assert!(owned.shutdown_complete.load(Ordering::Acquire));
+            shared.shutdown().unwrap();
+            drop(context);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn real_cpp_computed_gain_workflow_measures_and_exports_every_candidate() {
+    use crate::backend::{Connection,DisconnectCallback};
+    tauri::async_runtime::block_on(async {
+        let (root,spaces) = spaces();
+        let executable_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let executable = [executable_root.join("build/Debug/control-cli.exe"),executable_root.join("build/Release/control-cli.exe")]
+            .into_iter().find(|path| path.is_file()).expect("Build the C++ control-cli before running integration tests");
+        let mut wav = vec![
+            b'R',b'I',b'F',b'F',44,0,0,0,b'W',b'A',b'V',b'E',b'f',b'm',b't',b' ',
+            16,0,0,0,1,0,1,0,0x44,0xac,0,0,0x88,0x58,1,0,2,0,16,0,
+            b'd',b'a',b't',b'a',8,0,0,0,
+        ];
+        for sample in [4000_i16,-4000,1000,-1000] { wav.extend_from_slice(&sample.to_le_bytes()); }
+        std::fs::write(spaces.user_root.join("input.wav"),&wav).unwrap();
+        let program = include_str!("../../../../examples/workflows/computed-gain.workflow.json");
+        std::fs::write(spaces.user_root.join("computed.workflow.json"),program).unwrap();
+        let callback: DisconnectCallback = Arc::new(|_| {});
+        let shared = Arc::new(BackendManager::with_test_connection(Connection::spawn(
+            &executable,spaces.user_root.clone(),"computed-user".into(),false,false,callback.clone()).unwrap()));
+        let owned = Arc::new(BackendManager::with_test_connection(Connection::spawn(
+            &executable,spaces.ai_root.clone(),"computed-ai".into(),false,false,callback).unwrap()));
+        let store = Arc::new(RunStore::default());
+        let app_data = root.join("data");
+        let mut context = ToolContext::new(spaces,shared.clone(),"computed-user".into())
+            .with_records(store.clone(),app_data.clone());
+        context.owned = Some((owned.clone(),"computed-ai".into()));
+        let cancel = AtomicBool::new(false);
+        let args = json!({"space":"user","path":"computed.workflow.json"});
+        let validated = context.dispatch("workflow","workflow_validate",&args,&cancel).await.unwrap();
+        assert_eq!(validated["valid"],true,"{validated}");
+        assert!(!context.spaces.ai_root.join("computed-gain-001").exists());
+        assert!(!context.spaces.user_root.join("computed-gain-001").exists());
+        assert!(store.list(&context.spaces,&app_data).unwrap().records.is_empty());
+        let report = context.dispatch("workflow","workflow_run",&args,&cancel).await.unwrap();
+        assert_eq!(report["state"],"succeeded","{report}");
+        assert_eq!(report["graph_runs"],3);
+        assert_eq!(report["tool_calls"],8);
+        assert_eq!(report["steps_executed"],25);
+        let trace = report["trace"].as_array().unwrap();
+        assert_eq!(trace.iter().filter(|entry| entry["step_type"] == "compute").count(),12);
+        assert_eq!(trace.iter().filter(|entry| entry["step_type"] == "concat").count(),4);
+        assert_eq!(report["outputs"]["folder"],"computed-gain-001");
+        let runs = report["outputs"]["runs"].as_array().unwrap();
+        assert_eq!(runs.len(),3);
+        let mut snapshots = Vec::new();
+        for (index,(run,gain)) in runs.iter().zip([-12.0_f64,-6.0,0.0]).enumerate() {
+            assert_eq!(run["gain_db"].as_f64(),Some(gain));
+            let path = format!("computed-gain-001/gain-{index}.wav");
+            assert_eq!(run["output_path"],path);
+            assert_eq!(run["export"]["path"],path);
+            assert_eq!(run["render"]["state"],"succeeded");
+            let outputs = &run["render"]["result"]["outputs"];
+            let peak = outputs["peak"]["value"].as_f64().expect("Real C++ peak meter returns a number");
+            let expected = (4000.0/32768.0)*10.0_f64.powf(gain/20.0);
+            assert!((peak-expected).abs() < 0.0001,"gain {gain}: peak {peak}, expected {expected}");
+            assert_eq!(outputs["clipped_samples"]["value"].as_f64(),Some(0.0));
+            assert!(outputs["file"]["value"].as_str().unwrap().replace('\\',"/").ends_with(&path));
+            let delta = run["peak_delta"].as_f64().unwrap();
+            assert!((delta-(peak-0.25)).abs() < 1e-12);
+            assert!((run["absolute_peak_difference"].as_f64().unwrap()-delta.abs()).abs() < 1e-12);
+            let ai_bytes = std::fs::read(context.spaces.ai_root.join(&path)).unwrap();
+            assert!(ai_bytes.starts_with(b"RIFF"));
+            assert_eq!(std::fs::read(context.spaces.user_root.join(&path)).unwrap(),ai_bytes);
+            let child = store.load(&context.spaces,&app_data,run["render"]["run_id"].as_str().unwrap()).unwrap();
+            assert_eq!(child.configuration["graph"]["nodes"][1]["parameters"]["gain_db"].as_f64(),Some(gain));
+            assert!(child.files.iter().any(|file| file.space == "ai" && file.path == path && file.role == "output" && file.sha256.is_some()));
+            snapshots.push((path,ai_bytes));
+        }
+        assert_ne!(snapshots[0].1,snapshots[1].1);
+        assert_ne!(snapshots[1].1,snapshots[2].1);
+        assert_eq!(std::fs::read(context.spaces.user_root.join("input.wav")).unwrap(),wav);
+        assert_eq!(std::fs::read(context.spaces.ai_root.join("computed-gain-001/input.wav")).unwrap(),wav);
+        assert!(owned.shutdown_complete.load(Ordering::Acquire));
+        let repeated = context.dispatch("workflow","workflow_run",&args,&cancel).await.unwrap();
+        assert_eq!(repeated["state"],"failed");
+        assert_eq!(repeated["graph_runs"],0);
+        assert!(repeated["error"]["step_path"].as_str().unwrap().contains("import"),"{repeated}");
+        for (path,bytes) in snapshots {
+            assert_eq!(std::fs::read(context.spaces.ai_root.join(&path)).unwrap(),bytes);
+            assert_eq!(std::fs::read(context.spaces.user_root.join(&path)).unwrap(),bytes);
+        }
+        assert_eq!(std::fs::read(context.spaces.user_root.join("input.wav")).unwrap(),wav);
+        shared.shutdown().unwrap();
+        drop(context);
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
 #[test]
 fn plugin_run_provenance_is_selected_from_catalog_not_graph_or_private_paths() {
     let graph = json!({"nodes":[{"id":"a","type":"test.plugin.gain_v1","plugin":{"id":"forged"}},

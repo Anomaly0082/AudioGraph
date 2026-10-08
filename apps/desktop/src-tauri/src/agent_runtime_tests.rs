@@ -9,6 +9,10 @@ mod live_tests;
 mod live_recovery_tests;
 
 #[cfg(windows)]
+#[path = "agent_live_selection_tests.rs"]
+mod live_selection_tests;
+
+#[cfg(windows)]
 #[path = "agent_end_to_end_tests.rs"]
 mod end_to_end;
 
@@ -34,9 +38,14 @@ fn workflow_prompt_describes_internal_results_without_outer_tool_envelope() {
     let request = body("mock", &VecDeque::new(), &[], "workflow");
     let system = request["messages"][0]["content"].as_str().unwrap();
     for rule in ["WITHOUT", "/steps/id/result/outputs/export_name/value", "/steps/loop/0/child",
-        "/steps/choice/steps/child", "no arithmetic or string interpolation", "complete=false"] {
+        "/steps/choice/steps/child", "type:'compute'", "type:'concat'", "no inline arithmetic syntax",
+        "exactly 2 arguments", "abs with exactly 1", "0..64", "256 KiB", "9007199254740991",
+        "integer 5 differs from float 5.0", "tolerance", "type:'filter'", "type:'select'",
+        "found:false", "ties choose the first", "filtered array", "checks every score", "complete=false"] {
         assert!(system.contains(rule), "missing reference contract: {rule}");
     }
+    assert!(!body("mock", &VecDeque::new(), &[], "graph")["messages"][0]["content"].as_str().unwrap().contains("type:'compute'"));
+    assert!(!body("mock", &VecDeque::new(), &[], "graph")["messages"][0]["content"].as_str().unwrap().contains("type:'select'"));
 }
 
 #[cfg(windows)]

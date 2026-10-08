@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "inputs": { "source": "input.wav", "folder": "computed-gain-001", "base_gain_db": -12, "step_db": 6, "indices": [0, 1, 2], "target_peak": 0.25 },
+  "steps": [
+    { "id": "folder", "type": "call", "tool": "directory_create", "args": { "path": { "$ref": "/inputs/folder" } } },
+    { "id": "copy_path", "type": "concat", "parts": [{ "$ref": "/inputs/folder" }, "/input.wav"] },
+    { "id": "import", "type": "call", "tool": "file_copy_to_ai", "args": { "source_space": "user", "source_path": { "$ref": "/inputs/source" }, "path": { "$ref": "/steps/copy_path" } } },
+    {
+      "id": "runs", "type": "for_each", "items": { "$ref": "/inputs/indices" },
+      "steps": [
+        { "id": "offset_db", "type": "compute", "op": "mul", "args": [{ "$ref": "/item" }, { "$ref": "/inputs/step_db" }] },
+        { "id": "gain_db", "type": "compute", "op": "add", "args": [{ "$ref": "/inputs/base_gain_db" }, { "$ref": "/steps/offset_db" }] },
+        { "id": "output_path", "type": "concat", "parts": [{ "$ref": "/inputs/folder" }, "/gain-", { "$ref": "/item" }, ".wav"] },
+        {
+          "id": "render", "type": "call", "tool": "graph_run",
+          "args": {
+            "mode": "offline",
+            "graph": {
+              "schema_version": 1,
+              "nodes": [
+                { "id": "input", "type": "wav_input", "parameters": { "path": { "$ref": "/steps/import/path" } } },
+                { "id": "gain", "type": "gain", "parameters": { "gain_db": { "$ref": "/steps/gain_db" } } },
+                { "id": "meter", "type": "peak_meter" },
+                { "id": "output", "type": "wav_output", "parameters": { "path": { "$ref": "/steps/output_path" } } }
+              ],
+              "connections": [
+                { "from": { "node": "input", "port": "audio" }, "to": { "node": "gain", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "meter", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "output", "port": "audio" } }
+              ],
+              "exports": [
+                { "name": "file", "node": "output", "port": "path" },
+                { "name": "peak", "node": "meter", "port": "peak" },
+                { "name": "clipped_samples", "node": "output", "port": "clipped_samples" }
+              ]
+            }
+          }
+        },
+        { "id": "peak_delta", "type": "compute", "op": "sub", "args": [{ "$ref": "/steps/render/result/outputs/peak/value" }, { "$ref": "/inputs/target_peak" }] },
+        { "id": "absolute_peak_difference", "type": "compute", "op": "abs", "args": [{ "$ref": "/steps/peak_delta" }] },
+        { "id": "export", "type": "call", "tool": "file_export", "args": { "path": { "$ref": "/steps/output_path" }, "user_path": { "$ref": "/steps/output_path" } } }
+      ]
+    }
+  ],
+  "outputs": { "folder": { "$ref": "/inputs/folder" }, "runs": { "$ref": "/steps/runs" }, "note": "The absolute peak difference is calculated for every run; it does not select or filter candidates. This workflow performs no AI analysis or additional loop." },
+  "limits": { "max_steps": 48, "max_tool_calls": 12, "max_graph_runs": 3, "timeout_ms": 120000 }
+}

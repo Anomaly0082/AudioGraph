@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "inputs": { "source": "input.wav", "folder": "select-gain-001", "gains": [-12, 0, 12], "target_peak": 0.4 },
+  "steps": [
+    { "id": "folder", "type": "call", "tool": "directory_create", "args": { "path": { "$ref": "/inputs/folder" } } },
+    { "id": "copy_path", "type": "concat", "parts": [{ "$ref": "/inputs/folder" }, "/input.wav"] },
+    { "id": "import", "type": "call", "tool": "file_copy_to_ai", "args": { "source_space": "user", "source_path": { "$ref": "/inputs/source" }, "path": { "$ref": "/steps/copy_path" } } },
+    {
+      "id": "runs", "type": "for_each", "items": { "$ref": "/inputs/gains" },
+      "steps": [
+        { "id": "gain_db", "type": "set", "value": { "$ref": "/item" } },
+        { "id": "source_index", "type": "set", "value": { "$ref": "/index" } },
+        { "id": "output_path", "type": "concat", "parts": [{ "$ref": "/inputs/folder" }, "/gain-", { "$ref": "/item" }, ".wav"] },
+        {
+          "id": "render", "type": "call", "tool": "graph_run",
+          "args": {
+            "mode": "offline",
+            "graph": {
+              "schema_version": 1,
+              "nodes": [
+                { "id": "input", "type": "wav_input", "parameters": { "path": { "$ref": "/steps/import/path" } } },
+                { "id": "gain", "type": "gain", "parameters": { "gain_db": { "$ref": "/steps/gain_db" } } },
+                { "id": "meter", "type": "peak_meter" },
+                { "id": "output", "type": "wav_output", "parameters": { "path": { "$ref": "/steps/output_path" } } }
+              ],
+              "connections": [
+                { "from": { "node": "input", "port": "audio" }, "to": { "node": "gain", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "meter", "port": "audio" } },
+                { "from": { "node": "gain", "port": "audio" }, "to": { "node": "output", "port": "audio" } }
+              ],
+              "exports": [
+                { "name": "file", "node": "output", "port": "path" },
+                { "name": "peak", "node": "meter", "port": "peak" },
+                { "name": "clipped_samples", "node": "output", "port": "clipped_samples" }
+              ]
+            }
+          }
+        },
+        { "id": "peak_delta", "type": "compute", "op": "sub", "args": [{ "$ref": "/steps/render/result/outputs/peak/value" }, { "$ref": "/inputs/target_peak" }] },
+        { "id": "distance", "type": "compute", "op": "abs", "args": [{ "$ref": "/steps/peak_delta" }] }
+      ]
+    },
+    { "id": "eligible", "type": "filter", "items": { "$ref": "/steps/runs" }, "condition": { "op": "lte", "left": { "$ref": "/item/render/result/outputs/clipped_samples/value" }, "right": 0 } },
+    { "id": "selected", "type": "select", "items": { "$ref": "/steps/eligible" }, "by": { "$ref": "/item/distance" }, "order": "min" },
+    {
+      "id": "delivery", "type": "if", "condition": { "op": "eq", "left": { "$ref": "/steps/selected/found" }, "right": true },
+      "then": [{ "id": "export", "type": "call", "tool": "file_export", "args": { "path": { "$ref": "/steps/selected/item/output_path" }, "user_path": { "$ref": "/steps/selected/item/output_path" } } }],
+      "else": []
+    }
+  ],
+  "outputs": { "selected": { "$ref": "/steps/selected" }, "delivery": { "$ref": "/steps/delivery" }, "all_results": { "$ref": "/steps/runs" } },
+  "limits": { "max_steps": 32, "max_tool_calls": 8, "max_graph_runs": 3, "timeout_ms": 120000 }
+}
