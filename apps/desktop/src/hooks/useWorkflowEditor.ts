@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { confirmDesktop, invokeDesktop } from "../api/desktop";
+import { chooseNewWorkflowFile, confirmDesktop, invokeDesktop } from "../api/desktop";
+import { editorModified, editorWorkspaceContext, transitionEditorWorkspace, savedEditorSource, sourceForContext, workspaceRelativeSavePath, type EditorSource, type EditorWorkspace } from "../editor-source-model";
 import { formatError } from "../model";
 import type { Connection } from "../types/desktop";
+import type { SessionState } from "../session-state-model";
 import {
   blankWorkflowText,
   canRunWorkflow,
@@ -31,6 +33,8 @@ export function useWorkflowEditor(
 ) {
   const [text, setText] = useState(blankWorkflowText);
   const [fileLabel, setFileLabel] = useState("未保存的 Workflow");
+  const [, setSource] = useState<EditorSource | null>(null);
+  const sourceRef = useRef<EditorSource | null>(null);
   const [sourceSpace, setSourceSpace] = useState<WorkflowSpace>("user");
   const [path, setPath] = useState("");
   const [action, setAction] = useState<WorkflowEditorAction | null>(null);
@@ -53,6 +57,11 @@ export function useWorkflowEditor(
     connection?.workspace ?? null,
     contextKey,
   ]);
+  const workspaceRef = useRef<EditorWorkspace>({ workspace: null, scope: contextKey });
+  const transition = transitionEditorWorkspace(workspaceRef.current, sourceRef.current, connection?.workspace ?? null, contextKey);
+  workspaceRef.current = transition.owner;
+  sourceRef.current = transition.source;
+  const fileContext = editorWorkspaceContext(transition.owner);
   const contextRef = useRef({ identity, epoch: 0 });
   if (contextRef.current.identity !== identity) {
     contextRef.current = { identity, epoch: contextRef.current.epoch + 1 };
@@ -68,6 +77,7 @@ export function useWorkflowEditor(
     };
   }, []);
   useEffect(() => {
+    setSource(sourceRef.current);
     setValidated(null);
     setError("");
     setNotice("");
@@ -78,6 +88,13 @@ export function useWorkflowEditor(
       void requestStop(active);
     }
   }, [identity]);
+  const previousFileContext = useRef(fileContext);
+  useEffect(() => {
+    if (previousFileContext.current === fileContext) return;
+    previousFileContext.current = fileContext;
+    setFileLabel("未保存的 Workflow");
+    setPath("");
+  }, [fileContext]);
 
   function snapshot(): WorkflowSnapshot | null {
     const currentConnection = connectionRef.current;
@@ -114,6 +131,9 @@ export function useWorkflowEditor(
   }
   function applyText(value: string, label = "载入的 Workflow（未校验）") {
     if (readBusy()) return false;
+    sourceRef.current = null;
+    setSource(null);
+    setPath("");
     editText(value);
     setFileLabel(label);
     return true;
@@ -133,6 +153,14 @@ export function useWorkflowEditor(
   function fail(reason: unknown, expected: WorkflowSnapshot) {
     if (current(expected)) setError(formatError(reason));
   }
+  function bindLoaded(loaded: { space: WorkflowSpace; path: string; text: string; revision: string }) {
+    editText(loaded.text);
+    sourceRef.current = { context: fileContext, space: loaded.space, path: loaded.path, revision: loaded.revision, content: loaded.text };
+    setSource(sourceRef.current);
+    setFileLabel(`${loaded.space}: ${loaded.path}`);
+    setSourceSpace(loaded.space);
+    setPath(loaded.path);
+  }
 
   async function load(): Promise<boolean> {
     const captured = begin("loading");
@@ -142,6 +170,7 @@ export function useWorkflowEditor(
         space: WorkflowSpace;
         path: string;
         text: string;
+        revision: string;
       }>("workflow_editor_load", {
         sessionId: captured.sessionId,
         space: sourceSpace,
@@ -156,8 +185,7 @@ export function useWorkflowEditor(
       )
         return false;
       if (!current(captured)) return false;
-      editText(loaded.text);
-      setFileLabel(`${loaded.space}: ${loaded.path}`);
+      bindLoaded(loaded);
       setNotice("文件已载入，待校验。");
       return true;
     } catch (reason) {
@@ -168,26 +196,59 @@ export function useWorkflowEditor(
     }
   }
 
-  async function save(): Promise<boolean> {
-    const captured = begin("saving");
+  async function loadFromFile(space: WorkflowSpace, path: string, preview: string, stillCurrent: () => boolean): Promise<boolean> {
+    const captured = begin("loading");
     if (!captured) return false;
     try {
-      const saved = await invokeDesktop<{ space: WorkflowSpace; path: string }>(
+      const loaded = await invokeDesktop<{ space: WorkflowSpace; path: string; text: string; revision: string }>("workflow_editor_load", {
+        sessionId: captured.sessionId, space, path: workflowRelativePath(path),
+      });
+      if (loaded.text !== preview) throw new Error("文件已变化，请刷新预览后重新打开。");
+      if (!current(captured) || !stillCurrent()) return false;
+      bindLoaded(loaded);
+      setNotice("文件已载入，待校验。");
+      return true;
+    } catch (reason) { fail(reason, captured); return false; }
+    finally { setActionNow(null); }
+  }
+
+  async function save(saveAs = false): Promise<boolean> {
+    const captured = begin("saving");
+    if (!captured) return false;
+    const origin = saveAs ? null : sourceForContext(sourceRef.current, fileContext);
+    try {
+      const targetSpace = origin?.space ?? sourceSpace;
+      let targetPath = origin?.path ?? path;
+      if (!origin && ((!targetPath.trim()) || (saveAs && targetSpace === "user"))) {
+        if (targetSpace === "ai") throw new Error("请在相对文件路径中填写 AI 工作区的新文件路径，再保存或另存为。");
+        const workspace = connectionRef.current!.workspace;
+        const selected = await chooseNewWorkflowFile(workspace);
+        if (!selected) return false;
+        targetPath = workspaceRelativeSavePath(workspace, selected);
+      }
+      if (!currentContext(captured)) return false;
+      const saved = await invokeDesktop<{ space: WorkflowSpace; path: string; revision: string }>(
         "workflow_editor_save",
         {
           sessionId: captured.sessionId,
-          space: sourceSpace,
-          path: workflowRelativePath(path),
+          space: targetSpace,
+          path: workflowRelativePath(targetPath),
           text: captured.text,
+          expectedRevision: origin?.revision,
         },
       );
-      if (current(captured)) {
+      if (currentContext(captured)) {
+        const accepted = savedEditorSource(captured.contextKey, contextRef.current.identity, saved.path, saved.revision, captured.text, saved.space);
+        sourceRef.current = accepted && { ...accepted, context: fileContext };
+        setSource(sourceRef.current);
         setFileLabel(`${saved.space}: ${saved.path}`);
-        setNotice("已另存为新文件。");
+        setSourceSpace(saved.space);
+        setPath(saved.path);
+        setNotice(origin ? "已保存。" : "已另存为新文件。");
       }
       return true;
     } catch (reason) {
-      fail(reason, captured);
+      if (currentContext(captured)) setError(`${formatError(reason)} 草稿已保留；文件冲突时请重新打开或另存为新路径。`);
       return false;
     } finally {
       setActionNow(null);
@@ -337,10 +398,22 @@ export function useWorkflowEditor(
   }
 
   return {
+    exportSessionState: (): SessionState["workflow"] => ({ text, sourceSpace, path, source: sourceRef.current && workspaceRef.current.workspace ? { path: sourceRef.current.path, revision: sourceRef.current.revision, content: sourceRef.current.content, workspace: workspaceRef.current.workspace, space: sourceRef.current.space ?? "user" } : null }),
+    restoreSessionState(value: SessionState["workflow"], workspace: string | null) {
+      contextRef.current.epoch++;
+      const owner = transitionEditorWorkspace({ workspace: null, scope: contextKey }, null, workspace, contextKey).owner;
+      workspaceRef.current = owner;
+      previousFileContext.current = editorWorkspaceContext(owner);
+      editText(value.text);
+      sourceRef.current = value.source ? { path: value.source.path, revision: value.source.revision, content: value.source.content, space: value.source.space, context: editorWorkspaceContext(transitionEditorWorkspace({ workspace: null, scope: contextKey }, null, value.source.workspace, contextKey).owner) } : null;
+      setSource(sourceRef.current); setSourceSpace(value.sourceSpace); setPath(value.path); setFileLabel(value.source ? `${value.source.space}: ${value.source.path}` : "恢复的 Workflow 草稿");
+      validatedRef.current = null; setValidated(null);
+    },
     text,
     editText,
     applyText,
     fileLabel,
+    modified: editorModified(sourceForContext(sourceRef.current, fileContext), text),
     sourceSpace,
     setSourceSpace,
     path,
@@ -358,7 +431,9 @@ export function useWorkflowEditor(
     validationCurrent:
       !!validated && isCurrentWorkflowSnapshot(validated, snapshot()),
     load,
+    loadFromFile,
     save,
+    saveAs: () => save(true),
     validate,
     run,
     stop,

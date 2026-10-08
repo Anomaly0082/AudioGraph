@@ -46,6 +46,7 @@ type Props = {
   onLoadTemplate: () => void;
   onLoad: () => void;
   onSave: () => void;
+  onSaveAs: () => void;
   onDevices: () => void;
   onTasks: () => void;
 };
@@ -62,6 +63,7 @@ export default function EditorPage({
   onLoadTemplate,
   onLoad,
   onSave,
+  onSaveAs,
   onDevices,
   onTasks,
 }: Props) {
@@ -148,7 +150,13 @@ export default function EditorPage({
             }
             onClick={onSave}
           >
-            另存为新文件
+            保存
+          </button>
+          <button
+            disabled={!session.desktop || !connection || !!busy || fileBusy || !canSubmitGraph}
+            onClick={onSaveAs}
+          >
+            另存为
           </button>
         </div>
         <div className="execution-bar">
@@ -430,7 +438,7 @@ export default function EditorPage({
         className="panel editor-json"
         open={!!draft.localGraph.error}
       >
-        <div className="file-caption">{draft.fileLabel}</div>
+        <div className="file-caption">{draft.fileLabel}{draft.modified ? " · 未保存修改" : ""}</div>
         <textarea
           id="graph-editor"
           aria-label="Graph JSON"

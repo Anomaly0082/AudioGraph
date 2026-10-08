@@ -33,12 +33,17 @@ fn validate_text(text: &str) -> Value {
 fn load_text(spaces: &ToolWorkspaces, space: &str, path: &str) -> Result<Value,String> {
     let file = spaces.dispatch("file_read_text",&json!({"space":space,"path":path}))?;
     let text = file.get("content").and_then(Value::as_str).ok_or("File is not UTF-8 text")?;
-    Ok(json!({"space":space,"path":path,"text":text}))
+    Ok(json!({"space":space,"path":path,"text":text,"revision":crate::editor_file::revision(text.as_bytes())}))
 }
 
 fn save_text(spaces: &ToolWorkspaces, space: &str, path: &str, text: &str) -> Result<Value,String> {
     parse_snapshot(text).map_err(|error| error.to_string())?;
     spaces.write_new_text(space,path,text)
+}
+
+fn save_text_with_revision(spaces: &ToolWorkspaces, space: &str, path: &str, text: &str, expected: Option<&str>) -> Result<Value,String> {
+    parse_snapshot(text).map_err(|error| error.to_string())?;
+    spaces.write_editor_text(space,path,text,expected)
 }
 
 async fn run_snapshot(tools: &mut ToolContext, text: &str, cancel: &AtomicBool) -> Result<Value,String> {
@@ -73,14 +78,14 @@ pub async fn workflow_editor_load(app: tauri::AppHandle, backend: tauri::State<'
 
 #[tauri::command]
 pub async fn workflow_editor_save(app: tauri::AppHandle, backend: tauri::State<'_,Arc<BackendManager>>,
-    agent: tauri::State<'_,Arc<AgentManager>>, session_id: String, space: String, path: String, text: String) -> Result<Value,String> {
+    agent: tauri::State<'_,Arc<AgentManager>>, session_id: String, space: String, path: String, text: String, expected_revision: Option<String>) -> Result<Value,String> {
     // Reject invalid text before preparing any directories.
     parse_snapshot(&text).map_err(|error| error.to_string())?;
     let user_root = backend.workspace(&session_id)?;
     let data = app_data(&app)?;
     let agent = agent.inner().clone();
     tauri::async_runtime::spawn_blocking(move || agent.with_idle(|| {
-        save_text(&ToolWorkspaces::new(&user_root,&data)?,&space,&path,&text)
+        save_text_with_revision(&ToolWorkspaces::new(&user_root,&data)?,&space,&path,&text,expected_revision.as_deref())
     })).await.map_err(|_| "Workflow save task failed".to_owned())?
 }
 
@@ -104,3 +109,29 @@ pub async fn workflow_editor_run(app: tauri::AppHandle, backend: tauri::State<'_
 #[cfg(test)]
 #[path = "workflow_editor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod manual_save_tests {
+    use super::*;
+    #[test]
+    fn manual_save_revisions_validate_and_preserve_conflicts_in_both_spaces() {
+        let root = std::env::temp_dir().join(format!("workflow-manual-save-{}",std::process::id()));
+        std::fs::create_dir_all(root.join("user")).unwrap();
+        let spaces = ToolWorkspaces::new(&root.join("user"),&root.join("data")).unwrap();
+        let text = json!({"schema_version":1,"inputs":{},"steps":[],"outputs":{}}).to_string();
+        for space in ["user","ai"] {
+            let saved = save_text_with_revision(&spaces,space,"manual.json",&text,None).unwrap();
+            let revision = saved["revision"].as_str().unwrap();
+            let loaded = load_text(&spaces,space,"manual.json").unwrap();
+            assert_eq!(loaded["revision"],revision);
+            assert!(save_text_with_revision(&spaces,space,"manual.json","{",Some(revision)).is_err());
+            let changed = format!("{text}\n");
+            let next = save_text_with_revision(&spaces,space,"manual.json",&changed,Some(revision)).unwrap();
+            assert_ne!(next["revision"],revision);
+            assert_eq!(save_text_with_revision(&spaces,space,"manual.json",&text,Some(revision)).unwrap_err(),crate::editor_file::CONFLICT);
+            assert_eq!(load_text(&spaces,space,"manual.json").unwrap()["text"],changed);
+            assert!(save_text_with_revision(&spaces,space,"manual.json",&text,None).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

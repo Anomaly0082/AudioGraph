@@ -23,5 +23,6 @@
 # Actual AI user settings live outside the repository; ignore accidental local copies too.
 ai-settings.json
 .ai-settings-*.tmp
+session-state.json
 # Managed local input snapshots, experiment records and generated audio.
 .audio-experiments/

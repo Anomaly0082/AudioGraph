@@ -37,7 +37,7 @@ export default function WorkflowEditorPage({
       </div>
       <div className="editor-toolbar">
         <label>
-          文件工作区
+          打开 / 另存为工作区
           <select
             aria-label="Workflow 文件工作区"
             value={editor.sourceSpace}
@@ -51,7 +51,7 @@ export default function WorkflowEditorPage({
           </select>
         </label>
         <label>
-          相对文件路径
+          打开 / 另存为路径
           <input
             aria-label="Workflow 相对文件路径"
             placeholder="workflows/example.workflow.json"
@@ -67,17 +67,20 @@ export default function WorkflowEditorPage({
           打开 JSON
         </button>
         <button
-          disabled={unavailable || !editor.path.trim()}
+          disabled={unavailable}
           onClick={() => void editor.save()}
         >
-          另存为新文件
+          保存
+        </button>
+        <button disabled={unavailable} onClick={() => void editor.saveAs()}>
+          另存为
         </button>
         <button disabled={editor.busy} onClick={() => void editor.resetBlank()}>
           恢复空白
         </button>
       </div>
-      <p className="hint">内部 Graph 在 AI 工作区运行</p>
-      <div className="file-caption">{editor.fileLabel}</div>
+      <p className="hint">保存更新原文件；另存为不覆盖已有文件，AI 工作区需填写新路径。内部 Graph 在 AI 工作区运行。</p>
+      <div className="file-caption">{editor.fileLabel}{editor.modified ? " · 未保存修改" : ""}</div>
       <textarea
         aria-label="Workflow JSON"
         className="code-editor"

@@ -15,6 +15,7 @@ import { useRunRecords } from "./hooks/useRunRecords";
 import { useWorkflowEditor } from "./hooks/useWorkflowEditor";
 import { useWorkspaceBrowser } from "./hooks/useWorkspaceBrowser";
 import { usePluginManager } from "./hooks/usePluginManager";
+import { useSessionState } from "./hooks/useSessionState";
 import AppShell from "./components/AppShell";
 import WorkspacePanel from "./components/WorkspacePanel";
 import WorkbenchPage, { type WorkbenchSetup } from "./pages/WorkbenchPage";
@@ -43,6 +44,8 @@ export default function App() {
   });
   const [viewBusy, setViewBusy] = useState(false);
   const viewBusyRef = useRef(false);
+  const recoveryBlockedRef = useRef(true);
+  const rememberedWorkspace = useRef<string | null>(null);
   const session = useAudioSession();
   const plugins = usePluginManager(
     {
@@ -52,12 +55,13 @@ export default function App() {
     },
     session.desktop,
   );
-  const draft = useGraphDraft(session.connection?.sessionId ?? null);
+  const draft = useGraphDraft(session.connection?.sessionId ?? null, session.connection?.workspace ?? "");
   const settings = useAiSettings(invokeDesktop);
   const agent = useAgentTools({
     connection: session.connection,
     settings,
     blocked: () =>
+      recoveryBlockedRef.current ||
       workflowBusyRef.current() ||
       viewBusyRef.current ||
       !!session.readBusy() ||
@@ -67,6 +71,7 @@ export default function App() {
   const workflowEditor = useWorkflowEditor(
     session.connection,
     () =>
+      recoveryBlockedRef.current ||
       viewBusyRef.current ||
       agent.readBusy() ||
       !!session.readBusy() ||
@@ -90,6 +95,29 @@ export default function App() {
     connection: session.connection,
     inspect: session.inspectAudio,
   });
+  if (session.connection) rememberedWorkspace.current = session.connection.workspace;
+  const recovery = useSessionState(session.desktop, () => ({
+    schema_version: 1,
+    workspace: rememberedWorkspace.current,
+    page, editorKind,
+    permissions: { allowDevices: session.allowDevices, allowMonitor: session.allowMonitor },
+    graph: draft.exportSessionState(),
+    workflow: workflowEditor.exportSessionState(),
+  }), async state => {
+    rememberedWorkspace.current = state.workspace;
+    draft.restoreSessionState(state.graph, state.workspace);
+    workflowEditor.restoreSessionState(state.workflow, state.workspace);
+    setPage(state.page); setEditorKind(state.editorKind);
+    // Apply before connecting so the checkboxes and native session agree.
+    // Permissions alone do not start a task or open an audio stream.
+    await session.applyPermissions(state.permissions ?? { allowDevices: false, allowMonitor: false });
+    if (state.workspace) {
+      session.setWorkspace(state.workspace);
+      try { await session.connectBackend(state.workspace); }
+      catch (reason) { session.setError(formatError(reason)); }
+    }
+  });
+  recoveryBlockedRef.current = !recovery.ready || recovery.closing;
   const goWorkbench = () => {
     setSetup((current) => ({ ...current, approach: "ai" }));
     setPage("workbench");
@@ -97,7 +125,7 @@ export default function App() {
 
   // Dialog/draft operations have their own guard; navigation and reading stay available.
   async function viewAction(action: () => Promise<unknown> | unknown) {
-    if (viewBusyRef.current) return;
+    if (recoveryBlockedRef.current || viewBusyRef.current) return;
     viewBusyRef.current = true;
     setViewBusy(true);
     try {
@@ -110,11 +138,12 @@ export default function App() {
     }
   }
   function sessionAction(action: () => Promise<unknown>) {
+    if (recoveryBlockedRef.current) return;
     void action().catch((reason) => session.setError(formatError(reason)));
   }
   async function validateDraft() {
     if (workflowEditor.readBusy()) throw new Error("请先结束 Workflow 操作。");
-    if (agent.busy) throw new Error("请先停止工具助手。");
+    if (agent.readBusy()) throw new Error("请先停止工具助手。");
     const id = session.connection?.sessionId;
     if (!id) return;
     const key = draft.validationKey;
@@ -123,7 +152,7 @@ export default function App() {
   }
   async function runDraft() {
     if (workflowEditor.readBusy()) throw new Error("请先结束 Workflow 操作。");
-    if (agent.busy) throw new Error("请先停止工具助手。");
+    if (agent.readBusy()) throw new Error("请先停止工具助手。");
     const id = await session.startSubmission(draft.buildSubmission(), {
       validationCurrent: draft.validationCurrent,
     });
@@ -163,6 +192,7 @@ export default function App() {
       session.cancelTask(session.task?.id, session.task?.sessionId),
     );
 
+  if (!recovery.ready || recovery.closing) return <div className="banner info" role="status">{recovery.closing ? "正在保存编辑状态并退出…" : "正在恢复编辑状态…"}</div>;
   return (
     <AppShell
       page={page}
@@ -171,6 +201,7 @@ export default function App() {
       onWorkspace={() => setWorkspaceOpen((open) => !open)}
       notices={
         <>
+          {recovery.error && <div className="banner warning" role="alert">{recovery.error}{recovery.disabled && <button onClick={() => void recovery.reset()}>重置恢复文件</button>}</div>}
           {!session.desktop && (
             <div className="banner preview">
               浏览器仅用于界面预览。文件、模型和任务操作需要桌面程序。
@@ -181,15 +212,19 @@ export default function App() {
               session={session}
               aiBusy={viewBusy || agent.busy || workflowEditor.busy}
               onClose={() => setWorkspaceOpen(false)}
-              onChoose={() => sessionAction(() => session.chooseWorkspace())}
-              onConnect={() =>
+              onChoose={() => {
+                if (!viewBusyRef.current && !agent.readBusy() && !workflowEditor.readBusy())
+                  sessionAction(() => session.chooseWorkspace());
+              }}
+              onConnect={(path) =>
                 sessionAction(async () => {
-                  await session.connectBackend();
+                  if (viewBusyRef.current || agent.readBusy() || workflowEditor.readBusy()) return;
+                  await session.connectBackend(path);
                   setWorkspaceOpen(false);
                 })
               }
               onDisconnect={() => {
-                if (!agent.busy && !workflowEditor.readBusy())
+                if (!viewBusyRef.current && !agent.readBusy() && !workflowEditor.readBusy())
                   sessionAction(() => session.disconnectBackend());
               }}
               onSettings={() => setPage("settings")}
@@ -206,6 +241,9 @@ export default function App() {
             <div className="banner info" role="status">
               {session.notice}
             </div>
+          )}
+          {!workspaceOpen && session.recentWorkspaces.warning && (
+            <div className="banner warning" role="alert">{session.recentWorkspaces.warning}</div>
           )}
           {session.forcedWarning && (
             <div className="banner warning" role="alert">
@@ -354,7 +392,7 @@ export default function App() {
                 ))
               )
                 return;
-              draft.editGraph(JSON.stringify(graph, null, 2));
+              draft.replaceGraph(JSON.stringify(graph, null, 2), "AI Graph 副本（未保存）");
               setEditorKind("graph");
               setPage("editor");
             })
@@ -439,7 +477,14 @@ export default function App() {
                   if (!session.connection) return;
                   const saved = await draft.saveGraph(session.connection);
                   if (saved)
-                    session.setNotice("Graph 已另存为新文件：" + saved);
+                    session.setNotice("Graph 已保存：" + saved);
+                })
+              }
+              onSaveAs={() =>
+                void viewAction(async () => {
+                  if (!session.connection) return;
+                  const saved = await draft.saveGraph(session.connection, true);
+                  if (saved) session.setNotice("Graph 已另存为新文件：" + saved);
                 })
               }
               onDevices={() => sessionAction(() => session.listDevices())}
@@ -480,7 +525,9 @@ export default function App() {
               const graph = parseGraph(text, { allowEmpty: true });
               if (
                 !(await confirmDesktop(
-                  "将此文件载入 Graph 编辑器并替换草稿？文件路径仍按用户工作区解释，不会自动复制或运行。",
+                  selectedFile?.space === "ai"
+                    ? "将 AI 文件作为未保存的 Graph 副本载入编辑器？保存时需选择用户工作区的新路径。"
+                    : "将此文件载入 Graph 编辑器并替换草稿？保存会更新这个用户工作区文件。",
                   "载入 Graph",
                 ))
               )
@@ -490,7 +537,12 @@ export default function App() {
                 !draft.isCurrentDraftKey(draftKey)
               )
                 return;
-              draft.editGraph(JSON.stringify(graph, null, 2));
+              if (!selectedFile || !session.connection) return;
+              if (selectedFile.space === "user") {
+                if (!(await draft.loadFromFile(session.connection, selectedFile.path, text, () => files.isCurrentPreview(selectedFile)))) return;
+              } else {
+                draft.replaceGraph(JSON.stringify(graph, null, 2), "AI Graph 副本（未保存）：" + label);
+              }
               setEditorKind("graph");
               setPage("editor");
               session.setNotice("已载入配置：" + label);
@@ -510,10 +562,10 @@ export default function App() {
                 return;
               if (
                 !files.isCurrentPreview(selectedFile) ||
-                !workflowEditor.isCurrentSnapshot(expected) ||
-                !workflowEditor.applyText(text, label)
+                !workflowEditor.isCurrentSnapshot(expected)
               )
                 return;
+              if (!selectedFile || !(await workflowEditor.loadFromFile(selectedFile.space, selectedFile.path, text, () => files.isCurrentPreview(selectedFile)))) return;
               setEditorKind("workflow");
               setPage("editor");
             })
@@ -525,7 +577,8 @@ export default function App() {
           settings={settings}
           session={session}
           plugins={plugins}
-          workflowBusy={agent.busy || workflowEditor.busy}
+          workflowBusy={viewBusy || agent.busy || workflowEditor.busy}
+          onPermissions={(desired) => sessionAction(() => session.applyPermissions(desired, () => viewBusyRef.current || agent.readBusy() || workflowEditor.readBusy()))}
         />
       )}
     </AppShell>

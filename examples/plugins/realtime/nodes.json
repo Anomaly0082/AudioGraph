@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "plugin_id": "org.audiograph.realtime_example",
+  "plugin_version": "0.1.0",
+  "experimental": true,
+  "production_ready": false,
+  "nodes": [{
+    "typeId": "org.audiograph.realtime_example.gain_v1",
+    "displayName": "Realtime Example Gain",
+    "description": "Independent experimental realtime gain; fixed 48 kHz mono float32.",
+    "execution_domain": "realtime",
+    "stream_role": "none",
+    "realtime_role": "processor",
+    "inputs": [{"id": "audio", "type": "AudioStream", "required": true}],
+    "outputs": [{"id": "audio", "type": "AudioStream", "required": true}],
+    "parameters": [{"id": "gain_db", "type": "number", "description": "Static gain in decibels.", "required": false, "default": 0, "minimum": -24, "maximum": 12, "unit": "dB"}],
+    "realtime_capabilities": {
+      "format": {"sample_rate": 48000, "channels": 1, "sample_type": "float32", "layout": "interleaved"},
+      "maximum_block_frames": 65536,
+      "supports_variable_blocks": true,
+      "offline_drivable": true
+    },
+    "plugin": {
+      "id": "org.audiograph.realtime_example",
+      "implementation_version": "0.1.0",
+      "capabilities": [{"id": "ag.realtime_audio/1", "version": 1}],
+      "experimental": true,
+      "production_ready": false
+    }
+  }]
+}

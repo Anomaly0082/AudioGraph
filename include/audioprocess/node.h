@@ -72,6 +72,8 @@ struct PluginOrigin {
     std::string package_sha256;
     std::uint32_t abi_major{0};
     std::uint32_t abi_minor{1};
+    std::string capability_id{"ag.whole_sync/1"};
+    std::uint32_t capability_version{1};
     friend bool operator==(const PluginOrigin&, const PluginOrigin&) = default;
 };
 

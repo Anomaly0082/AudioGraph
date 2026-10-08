@@ -123,7 +123,7 @@ Json descriptor_json(const NodeDescriptor& node) {
         result["plugin"] = {{"id", plugin.plugin_id}, {"implementation_version", plugin.plugin_version},
             {"package_sha256", plugin.package_sha256},
             {"abi", {{"major", plugin.abi_major}, {"minor", plugin.abi_minor}}},
-            {"capabilities", Json::array({{{"id", "ag.whole_sync/1"}, {"version", 1}}})}};
+            {"capabilities", Json::array({{{"id", plugin.capability_id}, {"version", plugin.capability_version}}})}};
     }
     if (node.realtime_capabilities) {
         const auto& capability = *node.realtime_capabilities;

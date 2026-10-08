@@ -178,6 +178,52 @@ if(BUILD_TESTING AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND MSVC
     add_test(NAME plugin-host-tests COMMAND plugin-host-tests
         "${CMAKE_CURRENT_BINARY_DIR}/plugin-sdk-standalone/plugin-build/package/$<CONFIG>")
     set_tests_properties(plugin-host-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED plugin_sdk_package)
+    add_test(NAME realtime-plugin-sdk-standalone COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/realtime-plugin-sdk-standalone"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DPLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DCONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/realtime_plugin_sdk_standalone.cmake")
+    set_tests_properties(realtime-plugin-sdk-standalone PROPERTIES TIMEOUT 180 FIXTURES_SETUP realtime_plugin_sdk_package)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/examples/plugins/realtime/nodes.json" RT_NODES_JSON)
+    string(REPLACE "\r\n" "\n" RT_NODES_JSON "${RT_NODES_JSON}")
+    string(REPLACE "\r" "\n" RT_NODES_JSON "${RT_NODES_JSON}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/examples/plugins/realtime/nodes.json")
+    configure_file(examples/plugins/realtime/cmake/node_description.h.in
+        generated/realtime-fixture/node_description.h @ONLY NEWLINE_STYLE UNIX)
+    add_library(realtime-plugin-fixture SHARED tests/realtime_plugin_fixture.cpp)
+    target_compile_features(realtime-plugin-fixture PRIVATE cxx_std_20)
+    target_compile_definitions(realtime-plugin-fixture PRIVATE AG_PLUGIN_BUILD)
+    target_include_directories(realtime-plugin-fixture PRIVATE sdk/plugin/include "${CMAKE_CURRENT_BINARY_DIR}/generated/realtime-fixture")
+    set_target_properties(realtime-plugin-fixture PROPERTIES PREFIX "" OUTPUT_NAME "org.audiograph.realtime_example.plugin"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/realtime-plugin-fixture/$<CONFIG>")
+    target_compile_options(realtime-plugin-fixture PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    add_executable(realtime-plugin-host-tests tests/realtime_plugin_host_tests.cpp)
+    target_link_libraries(realtime-plugin-host-tests PRIVATE audio_control audio_plugins audio_graph_io nlohmann_json::nlohmann_json bcrypt)
+    target_compile_options(realtime-plugin-host-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    add_test(NAME realtime-plugin-host-tests COMMAND realtime-plugin-host-tests
+        "${CMAKE_CURRENT_BINARY_DIR}/realtime-plugin-sdk-standalone/plugin-build/package/$<CONFIG>" "$<TARGET_FILE:realtime-plugin-fixture>")
+    set_tests_properties(realtime-plugin-host-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED realtime_plugin_sdk_package)
+    add_test(NAME realtime-plugin-host-sample-tests COMMAND realtime-plugin-host-tests
+        "${CMAKE_CURRENT_BINARY_DIR}/realtime-plugin-sdk-standalone/plugin-build/package/$<CONFIG>")
+    set_tests_properties(realtime-plugin-host-sample-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED realtime_plugin_sdk_package)
+    add_test(NAME rnnoise-realtime-sdk-standalone COMMAND ${CMAKE_COMMAND}
+        "-DSOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/rnnoise-realtime-sdk-standalone"
+        "-DGENERATOR=${CMAKE_GENERATOR}"
+        "-DPLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DCONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/rnnoise_realtime_sdk_standalone.cmake")
+    set_tests_properties(rnnoise-realtime-sdk-standalone PROPERTIES TIMEOUT 300 FIXTURES_SETUP rnnoise_realtime_sdk_package)
+    add_executable(rnnoise-realtime-host-tests tests/rnnoise_realtime_host_tests.cpp)
+    target_link_libraries(rnnoise-realtime-host-tests PRIVATE audio_plugins audio_graph_io rnnoise nlohmann_json::nlohmann_json bcrypt)
+    target_compile_options(rnnoise-realtime-host-tests PRIVATE /W4 /permissive- /EHsc /utf-8 /Zc:__cplusplus)
+    add_test(NAME rnnoise-realtime-host-tests COMMAND rnnoise-realtime-host-tests
+        "${CMAKE_CURRENT_BINARY_DIR}/rnnoise-realtime-sdk-standalone/plugin-build/package/$<CONFIG>")
+    set_tests_properties(rnnoise-realtime-host-tests PROPERTIES TIMEOUT 60 FIXTURES_REQUIRED rnnoise_realtime_sdk_package)
 endif()
 
 if(BUILD_TESTING)

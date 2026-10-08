@@ -3,14 +3,14 @@ use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Serialize;
 use serde_json::{Map, Number, Value};
 use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
-pub struct GraphDocument { pub path: String, pub graph: Value }
-#[derive(Serialize)]
-pub struct SavedGraph { pub path: String }
+pub struct GraphDocument { pub path: String, pub graph: Value, pub revision: String }
+#[derive(Debug, Serialize)]
+pub struct SavedGraph { pub path: String, pub revision: String }
 
 // serde_json::Value 默认静默覆盖重复key；文件编辑必须明确拒绝歧义输入。
 struct StrictValue { depth: usize }
@@ -66,6 +66,7 @@ fn json_path(workspace: &Path, requested: &str, existing: bool) -> Result<PathBu
         return Err("只允许.json文件".into());
     }
     let target = if requested.is_absolute() { requested } else { workspace.join(requested) };
+    crate::editor_file::safe_file(&target)?;
     let resolved = if existing {
         std::fs::canonicalize(&target).map_err(|e| format!("无法定位Graph文件：{e}"))?
     } else {
@@ -77,31 +78,68 @@ fn json_path(workspace: &Path, requested: &str, existing: bool) -> Result<PathBu
     if !workspace.is_absolute() || !resolved.starts_with(workspace) {
         return Err("Graph文件必须位于当前连接工作区内；选择文件不会扩大音频访问范围。".into());
     }
+    crate::editor_file::safe_file(&resolved)?;
     Ok(resolved)
 }
 
 pub(crate) fn load_graph_file(workspace: &Path, path: &str) -> Result<GraphDocument, String> {
     let path = json_path(workspace, path, true)?;
-    let file = File::open(&path).map_err(|e| format!("读取Graph失败：{e}"))?;
+    let mut file = File::open(&path).map_err(|e| format!("读取Graph失败：{e}"))?;
+    if !crate::run_records::opened_file_within_workspace(&file,workspace) { return Err("Graph文件已改变或不在当前工作区内".into()); }
+    let before = file.metadata().map_err(|e| format!("读取Graph失败：{e}"))?;
+    if !before.is_file() || before.len() > MAX_REQUEST as u64 { return Err("Graph JSON超过4MiB或不是普通文件".into()); }
     let mut bytes = Vec::new();
-    file.take((MAX_REQUEST + 1) as u64).read_to_end(&mut bytes).map_err(|e| format!("读取Graph失败：{e}"))?;
+    (&mut file).take((MAX_REQUEST + 1) as u64).read_to_end(&mut bytes).map_err(|e| format!("读取Graph失败：{e}"))?;
+    let after = file.metadata().map_err(|e| format!("读取Graph失败：{e}"))?;
+    if bytes.len() as u64 != before.len() || after.len() != before.len() || after.modified().ok() != before.modified().ok()
+        || !crate::run_records::opened_file_within_workspace(&file,workspace) { return Err(crate::editor_file::CONFLICT.into()); }
     let graph = strict_json(&bytes)?;
     if graph.get("schema_version").and_then(Value::as_u64) != Some(1) {
         return Err("Graph schema_version必须采用整数1，不能使用1.0或1e0".into());
     }
-    Ok(GraphDocument { path: path.to_string_lossy().into_owned(), graph })
+    Ok(GraphDocument { path: path.to_string_lossy().into_owned(), graph, revision: crate::editor_file::revision(&bytes) })
 }
 
 pub(crate) fn save_graph_file(workspace: &Path, path: &str, graph: &Value) -> Result<SavedGraph, String> {
+    save_graph_file_with_revision(workspace,path,graph,None)
+}
+
+pub(crate) fn save_graph_file_with_revision(workspace: &Path, path: &str, graph: &Value, expected_revision: Option<&str>) -> Result<SavedGraph, String> {
     let bytes = serde_json::to_vec_pretty(graph).map_err(|e| e.to_string())?;
     strict_json(&bytes)?;
     if graph.get("schema_version").and_then(Value::as_u64) != Some(1) {
         return Err("Graph schema_version必须采用整数1".into());
     }
-    let path = json_path(workspace, path, false)?;
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
-        .map_err(|e| format!("无法创建新Graph文件（不覆盖已有文件，请另选名称）：{e}"))?;
-    file.write_all(&bytes).and_then(|_| file.flush())
-        .map_err(|e| format!("写入Graph失败，可能留下部分新文件：{e}"))?;
-    Ok(SavedGraph { path: path.to_string_lossy().into_owned() })
+    let (path,revision) = crate::editor_file::save(&bytes,expected_revision,MAX_REQUEST, |_| {
+        if expected_revision.is_some() {
+            let requested = PathBuf::from(path);
+            let target = if requested.is_absolute() { requested } else { workspace.join(requested) };
+            if !target.exists() { return Err(crate::editor_file::CONFLICT.into()); }
+        }
+        json_path(workspace,path,false)
+    })?;
+    Ok(SavedGraph { path: path.to_string_lossy().into_owned(), revision })
+}
+
+#[cfg(test)]
+mod manual_save_tests {
+    use super::*;
+    #[test]
+    fn snapshot_validation_and_workspace_scope_preserve_existing() {
+        let root = std::env::temp_dir().join(format!("graph-manual-save-{}",std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = std::fs::canonicalize(root).unwrap();
+        let graph = serde_json::json!({"schema_version":1,"nodes":[{"type":"future_unknown_node"}]});
+        let saved = save_graph_file(&root,"manual.json",&graph).unwrap();
+        let original = std::fs::read(root.join("manual.json")).unwrap();
+        let loaded = load_graph_file(&root,"manual.json").unwrap();
+        assert_eq!(saved.revision,loaded.revision);
+        assert!(save_graph_file_with_revision(&root,"manual.json",&serde_json::json!({"schema_version":2}),Some(&saved.revision)).is_err());
+        assert_eq!(std::fs::read(root.join("manual.json")).unwrap(),original);
+        assert!(save_graph_file(&root,"../manual-outside.json",&graph).is_err());
+        assert!(save_graph_file(&root,"missing/manual.json",&graph).is_err());
+        std::fs::remove_file(root.join("manual.json")).unwrap();
+        assert_eq!(save_graph_file_with_revision(&root,"manual.json",&graph,Some(&saved.revision)).unwrap_err(),crate::editor_file::CONFLICT);
+        std::fs::remove_dir(root).unwrap();
+    }
 }

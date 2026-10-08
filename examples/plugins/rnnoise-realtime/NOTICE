@@ -1,0 +1,14 @@
+Experimental AudioGraph RNNoise realtime plugin, version 0.1.0.
+
+Includes statically linked RNNoise v0.2 source from Xiph RNNoise tag commit
+904a876dce1f9ab8860c0a5000ed151f9f6eef58. See COPYING for source copyright
+and redistribution conditions, and source files for additional retained notices.
+
+The default pretrained model 0b50c45 is a separately prepared local dependency.
+Its archive and generated weight files contain no explicit model license.
+The RNNoise source license does not establish permission to redistribute these
+weights or binaries containing them. This package is for local experiments only.
+Do not publish or distribute it until the model license is clarified.
+Upstream clarification: https://github.com/xiph/rnnoise/issues/284
+
+No runtime model download, external-model loader, or license grant is provided.

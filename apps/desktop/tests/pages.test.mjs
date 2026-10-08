@@ -319,6 +319,8 @@ test("editor displays its independent draft while a task owns a different submis
   });
   assert.match(html, /draft-marker/);
   assert.doesNotMatch(html, /submitted-marker/);
+  assert.match(html, /<button[^>]*>保存<\/button>/);
+  assert.match(html, /<button[^>]*>另存为<\/button>/);
   assert.match(html, /查看运行记录/);
   assert.doesNotMatch(html, /graph-connections|graph-edge-row/);
   assert.match(html, /中键拖动平移/);
@@ -509,7 +511,7 @@ test("a missing plugin blocks run but preserves save, JSON, parameters, edges an
   assert.match(html, /original_port/);
   assert.match(html.match(/<button([^>]*)>提交任务<\/button>/)[1], /disabled/);
   assert.doesNotMatch(
-    html.match(/<button([^>]*)>另存为新文件<\/button>/)[1],
+    html.match(/<button([^>]*)>另存为<\/button>/)[1],
     /disabled/,
   );
   assert.equal(JSON.stringify(missing), original);
@@ -611,5 +613,13 @@ test("settings page alone renders API Key as a password input", () => {
   assert.match(html, /type="password"/);
   assert.match(html, /SECRET_TEST_KEY_928/);
   assert.match(html, /允许音频设备访问/);
+  const connected = render(SettingsPage, { settings, session: { ...session, connection: { capabilities: {} }, allowDevices: true }, plugins: pluginManager(), workflowBusy: false, onPermissions: noop });
+  const permissions = connected.match(/<input[^>]*type="checkbox"[^>]*>/g);
+  assert.equal(permissions.length, 2);
+  assert.ok(permissions.every((tag) => !/disabled/.test(tag)));
+  for (const extra of [{ busy: "更新设备权限中" }, {}]) {
+    const locked = render(SettingsPage, { settings, session: { ...session, allowDevices: true, ...extra }, plugins: pluginManager(), workflowBusy: !extra.busy, onPermissions: noop });
+    assert.ok(locked.match(/<input[^>]*type="checkbox"[^>]*>/g).every((tag) => /disabled/.test(tag)));
+  }
   assert.doesNotMatch(html, /数据保存范围|草稿、AI提案和当前任务在切页时保留/);
 });

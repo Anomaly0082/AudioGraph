@@ -83,7 +83,9 @@ set(assets
     "sdk/plugin/README.md|README.md"
     "docs/plugin-packages.md|docs/plugin-packages.md"
     "docs/plugin-development.md|docs/plugin-development.md"
+    "docs/plugin-realtime.md|docs/plugin-realtime.md"
     "examples/graphs/plugin-gain.json|examples/graphs/plugin-gain.json"
+    "examples/graphs/plugin-realtime-gain.json|examples/graphs/plugin-realtime-gain.json"
     "sdk/plugin/scripts/verify-example.cmake|scripts/verify-example.cmake")
 foreach(relative IN ITEMS CMakeLists.txt nodes.json cmake/manifest.json.in
     cmake/node_description.h.in cmake/package.cmake src/plugin.cpp
@@ -92,6 +94,12 @@ foreach(relative IN ITEMS CMakeLists.txt nodes.json cmake/manifest.json.in
 endforeach()
 foreach(relative IN ITEMS CMakeLists.txt host.cpp abi_c11.c)
     list(APPEND assets "tests/plugin_sdk/${relative}|tests/sdk-host/${relative}")
+endforeach()
+foreach(relative IN ITEMS CMakeLists.txt nodes.json src/plugin.cpp cmake/manifest.json.in cmake/node_description.h.in cmake/package.cmake)
+    list(APPEND assets "examples/plugins/realtime/${relative}|examples/realtime/${relative}")
+endforeach()
+foreach(relative IN ITEMS CMakeLists.txt host.cpp abi_c11.c allocations.cpp)
+    list(APPEND assets "tests/realtime_plugin_sdk/${relative}|tests/realtime-sdk-host/${relative}")
 endforeach()
 foreach(asset IN LISTS assets)
     string(REPLACE "|" ";" pair "${asset}")

@@ -15,34 +15,72 @@ import {
   type TemplateKind,
 } from "../model";
 import type { AiProposal } from "../ai-model";
+import type { SessionState } from "../session-state-model";
 import type { Connection, GraphSubmission } from "../types/desktop";
 import { isCurrentValidationResponse } from "../workflow-model";
 import { initialCanvasView, type CanvasView } from "../graph-canvas-layout";
+import { editorModified, editorWorkspaceContext, transitionEditorWorkspace, sameGraphContent, savedEditorSource, sourceForContext, type EditorSource, type EditorWorkspace } from "../editor-source-model";
 
 const initialGraph = JSON.stringify(createTemplate("text").graph, null, 2);
 
-export function useGraphDraft(sessionId: string | null) {
+export function useGraphDraft(sessionId: string | null, workspace = "") {
   const [mode, setModeState] = useState<Mode>("offline");
   const [template, setTemplate] = useState<TemplateKind>("text");
   const [graphText, setGraphText] = useState(initialGraph);
   // Layout is presentation-only: never serialize it into the executable Graph.
   const [canvasView, setCanvasView] = useState<CanvasView>(initialCanvasView);
   const [fileLabel, setFileLabel] = useState("未保存的 Graph");
+  const [, setSource] = useState<EditorSource | null>(null);
+  const sourceRef = useRef<EditorSource | null>(null);
+  const fileBusy = useRef(false);
+  const contentRef = useRef(graphText);
+  contentRef.current = graphText;
+  const originEpoch = useRef(0);
+  const sourceContext = JSON.stringify([sessionId, workspace]);
+  const workspaceRef = useRef<EditorWorkspace>({ workspace: null, scope: "" });
+  const transition = transitionEditorWorkspace(workspaceRef.current, sourceRef.current, sessionId === null ? null : workspace);
+  workspaceRef.current = transition.owner;
+  sourceRef.current = transition.source;
+  const fileContext = editorWorkspaceContext(transition.owner);
+  const contextRef = useRef(sourceContext);
+  if (contextRef.current !== sourceContext) {
+    contextRef.current = sourceContext;
+    ++originEpoch.current;
+  }
+  function bindSource(value: EditorSource | null) {
+    sourceRef.current = value;
+    setSource(value);
+  }
+  function replaceGraph(value: string, label = "未保存的 Graph") {
+    ++originEpoch.current;
+    bindSource(null);
+    editGraph(value);
+    setCanvasView(initialCanvasView());
+    setFileLabel(label);
+  }
   const [blockFrames, setBlockFramesState] = useState("256");
   const [duration, setDurationState] = useState("10");
   const [probe, setProbeState] = useState(true);
   const [validatedKey, setValidatedKey] = useState<string | null>(null);
   const sessionRef = useRef(sessionId);
   sessionRef.current = sessionId;
-  const previousSessionRef = useRef(sessionId);
+  const previousSessionRef = useRef(sourceContext);
   useEffect(() => {
-    if (previousSessionRef.current === sessionId) return;
-    previousSessionRef.current = sessionId;
+    if (previousSessionRef.current === sourceContext) return;
+    previousSessionRef.current = sourceContext;
     setProbeState(true);
     setValidatedKey(null);
-  }, [sessionId]);
+    setSource(sourceRef.current);
+  }, [sourceContext]);
+  const previousFileContext = useRef(fileContext);
+  useEffect(() => {
+    if (previousFileContext.current === fileContext) return;
+    previousFileContext.current = fileContext;
+    setFileLabel("未保存的 Graph（工作区已变化）");
+  }, [fileContext]);
   const validationKey = JSON.stringify([
     sessionId,
+    originEpoch.current,
     mode,
     graphText,
     blockFrames,
@@ -62,6 +100,7 @@ export function useGraphDraft(sessionId: string | null) {
   }, [graphText]);
 
   function editGraph(value: string) {
+    contentRef.current = value;
     setGraphText(value);
     setValidatedKey(null);
   }
@@ -109,6 +148,9 @@ export function useGraphDraft(sessionId: string | null) {
     return true;
   }
   async function loadTemplate(): Promise<boolean> {
+    if (fileBusy.current) return false;
+    const captured = contentRef.current;
+    const epoch = originEpoch.current;
     if (
       !(await confirmDesktop(
         "载入模板会替换当前编辑内容。请先保存需要保留的 Graph。继续？",
@@ -116,17 +158,24 @@ export function useGraphDraft(sessionId: string | null) {
       ))
     )
       return false;
+    if (fileBusy.current || captured !== contentRef.current || epoch !== originEpoch.current) return false;
     const value = createTemplate(template);
-    setCanvasView(initialCanvasView());
-    editGraph(JSON.stringify(value.graph, null, 2));
+    replaceGraph(JSON.stringify(value.graph, null, 2));
     setMode(value.mode);
     setProbe(true);
     setFileLabel("未保存的 Graph");
     return true;
   }
   async function loadGraph(connection: Connection): Promise<boolean> {
+    if (sessionRef.current !== connection.sessionId) return false;
+    if (fileBusy.current) return false;
+    fileBusy.current = true;
+    const captured = contentRef.current;
+    const epoch = originEpoch.current;
+    try {
     const selected = await chooseGraphFile(connection.workspace);
     if (!selected) return false;
+    if (sessionRef.current !== connection.sessionId || epoch !== originEpoch.current) return false;
     const loaded = await loadGraphDesktop(connection.sessionId, selected);
     const content = JSON.stringify(loaded.graph, null, 2);
     parseGraph(content);
@@ -138,36 +187,57 @@ export function useGraphDraft(sessionId: string | null) {
       ))
     )
       return false;
-    if (sessionRef.current !== connection.sessionId)
+    if (sessionRef.current !== connection.sessionId || epoch !== originEpoch.current || contentRef.current !== captured)
       throw new Error("连接已变化，未载入旧工作区的 Graph。");
-    editGraph(content);
-    setCanvasView(initialCanvasView());
-    setFileLabel(loaded.path);
+    replaceGraph(content, loaded.path);
+    bindSource({ context: fileContext, path: loaded.path, revision: loaded.revision, content });
     return true;
+    } finally { fileBusy.current = false; }
   }
-  async function saveGraph(connection: Connection): Promise<string | null> {
-    const graph = parseGraph(graphText);
-    const draftKey = keyRef.current;
-    const selected = await chooseNewGraphFile(connection.workspace);
+  async function loadFromFile(connection: Connection, path: string, preview: string, stillCurrent: () => boolean): Promise<boolean> {
+    if (sessionRef.current !== connection.sessionId) return false;
+    if (fileBusy.current) return false;
+    fileBusy.current = true;
+    const captured = contentRef.current;
+    const epoch = originEpoch.current;
+    try {
+      const loaded = await loadGraphDesktop(connection.sessionId, path);
+      const content = JSON.stringify(loaded.graph, null, 2);
+      if (!sameGraphContent(loaded.graph, parseGraph(preview, { allowEmpty: true })))
+        throw new Error("文件已变化，请刷新预览后重新打开。");
+      if (!stillCurrent() || sessionRef.current !== connection.sessionId || epoch !== originEpoch.current || contentRef.current !== captured) return false;
+      replaceGraph(content, loaded.path);
+      bindSource({ context: fileContext, path: loaded.path, revision: loaded.revision, content });
+      return true;
+    } finally { fileBusy.current = false; }
+  }
+  async function saveGraph(connection: Connection, saveAs = false): Promise<string | null> {
+    if (sessionRef.current !== connection.sessionId) return null;
+    if (fileBusy.current) return null;
+    fileBusy.current = true;
+    const content = contentRef.current;
+    const epoch = originEpoch.current;
+    const capturedContext = sourceContext;
+    const origin = saveAs ? null : sourceForContext(sourceRef.current, fileContext);
+    try {
+    const graph = parseGraph(content);
+    const selected = origin?.path ?? await chooseNewGraphFile(connection.workspace);
     if (!selected) return null;
-    if (sessionRef.current !== connection.sessionId)
+    if (sessionRef.current !== connection.sessionId || epoch !== originEpoch.current)
       throw new Error("连接已变化，未保存旧工作区的 Graph。");
-    const saved = await saveGraphDesktop(connection.sessionId, selected, graph);
-    if (
-      isCurrentValidationResponse(
-        connection.sessionId,
-        draftKey,
-        sessionRef.current,
-        keyRef.current,
-      )
-    ) {
+    const saved = await saveGraphDesktop(connection.sessionId, selected, graph, origin?.revision);
+    if (sessionRef.current === connection.sessionId && epoch === originEpoch.current) {
+      const accepted = savedEditorSource(capturedContext, contextRef.current, saved.path, saved.revision, content);
+      bindSource(accepted && { ...accepted, context: fileContext });
       setFileLabel(saved.path);
     }
     return saved.path;
+    } catch (reason) {
+      throw new Error(`${formatError(reason)} 请重新打开文件或另存为新路径；草稿已保留。`);
+    } finally { fileBusy.current = false; }
   }
   function applyProposal(proposal: AiProposal, label = "AI 提案（未保存）") {
-    setCanvasView(initialCanvasView());
-    editGraph(JSON.stringify(proposal.graph, null, 2));
+    replaceGraph(JSON.stringify(proposal.graph, null, 2), label);
     setMode(proposal.mode);
     setProbe(true);
     setFileLabel(label);
@@ -179,6 +249,16 @@ export function useGraphDraft(sessionId: string | null) {
     }
   }
   return {
+    exportSessionState: (): SessionState["graph"] => ({ text: graphText, mode, blockFrames, duration, canvasView, source: sourceRef.current && workspaceRef.current.workspace ? { path: sourceRef.current.path, revision: sourceRef.current.revision, content: sourceRef.current.content, workspace: workspaceRef.current.workspace, space: "user" } : null }),
+    restoreSessionState(value: SessionState["graph"], workspace: string | null) {
+      ++originEpoch.current;
+      const owner = transitionEditorWorkspace({ workspace: null, scope: "" }, null, workspace).owner;
+      workspaceRef.current = owner;
+      previousFileContext.current = editorWorkspaceContext(owner);
+      bindSource(value.source ? { path: value.source.path, revision: value.source.revision, content: value.source.content, context: editorWorkspaceContext(transitionEditorWorkspace({ workspace: null, scope: "" }, null, value.source.workspace).owner) } : null);
+      editGraph(value.text); setModeState(value.mode); setBlockFramesState(value.blockFrames); setDurationState(value.duration); setCanvasView(value.canvasView); setProbeState(true); setValidatedKey(null);
+      setFileLabel(value.source?.path ?? "恢复的 Graph 草稿");
+    },
     mode,
     setMode,
     template,
@@ -187,7 +267,9 @@ export function useGraphDraft(sessionId: string | null) {
     canvasView,
     setCanvasView,
     editGraph,
+    replaceGraph,
     fileLabel,
+    modified: editorModified(sourceForContext(sourceRef.current, fileContext), graphText),
     blockFrames,
     setBlockFrames,
     duration,
@@ -205,6 +287,7 @@ export function useGraphDraft(sessionId: string | null) {
     acceptValidation,
     loadTemplate,
     loadGraph,
+    loadFromFile,
     saveGraph,
     applyProposal,
   };

@@ -3,6 +3,7 @@
 mod commands;
 mod backend;
 mod graph_files;
+mod editor_file;
 mod ai;
 mod ai_commands;
 mod ai_settings;
@@ -19,6 +20,8 @@ mod workspace_browser;
 mod plugin_snapshot;
 mod plugin_manager;
 mod run_records;
+mod recent_workspaces;
+mod session_state;
 mod run_history_tools;
 #[cfg(test)]
 mod run_records_review_tests;
@@ -29,8 +32,44 @@ mod workflow_review_tests;
 mod tool_workspaces_tests;
 
 use std::sync::{Arc, atomic::Ordering};
-use tauri::Manager;
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri::{Manager, Emitter};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
+
+fn request_close(app: tauri::AppHandle) {
+    let coordinator=app.state::<Arc<session_state::CloseCoordinator>>().inner().clone();
+    let Some(request_id)=coordinator.request() else { return; };
+    let _=app.emit("session-state-close-requested",serde_json::json!({"requestId":request_id}));
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if !coordinator.waiting(&request_id) { return; }
+        tauri::async_runtime::spawn_blocking(move || {
+            if !coordinator.begin_confirmation(&request_id) { return; }
+            let quit=app.dialog().message("尚未确认保存编辑器恢复记录。是否仍然退出？")
+                .title("退出前保存未确认").kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancel).blocking_show();
+            if quit && coordinator.claim(&request_id) {
+                let manager=app.state::<Arc<backend::BackendManager>>().inner().clone();
+                shutdown_for_close(app,manager);
+            } else if coordinator.cancel(&request_id) {
+                let _=app.emit("session-state-close-cancelled",serde_json::json!({"requestId":request_id}));
+            }
+        });
+    });
+}
+#[tauri::command]
+fn session_state_close_confirmation(app: tauri::AppHandle, request_id: String)->bool {
+    app.state::<Arc<session_state::CloseCoordinator>>().begin_confirmation(&request_id)
+}
+#[tauri::command]
+fn session_state_finish_close(app: tauri::AppHandle, request_id: String)->Result<(),String> {
+    if !app.state::<Arc<session_state::CloseCoordinator>>().claim(&request_id) { return Err("关闭请求已失效".into()); }
+    let manager=app.state::<Arc<backend::BackendManager>>().inner().clone();
+    shutdown_for_close(app,manager); Ok(())
+}
+#[tauri::command]
+fn session_state_cancel_close(app: tauri::AppHandle, request_id: String)->Result<(),String> {
+    if app.state::<Arc<session_state::CloseCoordinator>>().cancel(&request_id) { Ok(()) } else { Err("关闭请求已失效".into()) }
+}
 
 fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManager>) {
     if manager.closing.swap(true, Ordering::AcqRel) { return; }
@@ -49,6 +88,9 @@ fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManage
                 app.exit(0);
             }
             Err(error) => {
+                if let Some(request_id)=app.state::<Arc<session_state::CloseCoordinator>>().reset() {
+                    let _=app.emit("session-state-close-cancelled",serde_json::json!({"requestId":request_id}));
+                }
                 manager.closing.store(false, Ordering::Release);
                 ai.reopen();
                 agent.reopen();
@@ -69,6 +111,9 @@ fn main() {
         .manage(Arc::new(agent_runtime::AgentManager::default()))
         .manage(Arc::new(conversation_store::ConversationStore::default()))
         .manage(Arc::new(run_records::RunStore::default()))
+        .manage(Arc::new(recent_workspaces::RecentWorkspaceStore::default()))
+        .manage(Arc::new(session_state::SessionStateStore::default()))
+        .manage(Arc::new(session_state::CloseCoordinator::default()))
         .manage(Arc::new(commands::ManualRunTracker::default()))
         .manage(Arc::new(plugin_manager::PluginManager::default()))
         .setup(|app| {
@@ -112,6 +157,16 @@ fn main() {
             ,run_records::run_records_list
             ,run_records::run_records_load
             ,run_records::run_records_check_files
+            ,recent_workspaces::recent_workspaces_list
+            ,recent_workspaces::recent_workspaces_remember
+            ,recent_workspaces::recent_workspaces_remove
+            ,recent_workspaces::recent_workspaces_clear
+            ,session_state::session_state_load
+            ,session_state::session_state_save
+            ,session_state::session_state_clear
+            ,session_state_finish_close
+            ,session_state_close_confirmation
+            ,session_state_cancel_close
             ,workflow_editor::workflow_editor_validate
             ,workflow_editor::workflow_editor_load
             ,workflow_editor::workflow_editor_save
@@ -129,18 +184,19 @@ fn main() {
                 let manager = window.state::<Arc<backend::BackendManager>>().inner().clone();
                 if !manager.shutdown_complete.load(Ordering::Acquire) {
                     api.prevent_close();
-                    shutdown_for_close(window.app_handle().clone(), manager);
+                    request_close(window.app_handle().clone());
                 }
             }
         })
         .build(tauri::generate_context!())
         .expect("failed to build AudioProcess Tauri prototype")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                if code == Some(0) { return; }
                 let manager = app.state::<Arc<backend::BackendManager>>().inner().clone();
                 if !manager.shutdown_complete.load(Ordering::Acquire) {
                     api.prevent_exit();
-                    shutdown_for_close(app.clone(), manager);
+                    request_close(app.clone());
                 }
             }
         });

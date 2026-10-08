@@ -2,7 +2,9 @@
 
 本文用于独立 SDK 开发包，也适用于仓库内开发。开发包根 README 给出工具链和构建命令；包成员、依赖及资源限制见[插件包规范](plugin-packages.md)。以独立示例为起点，通过 `find_package(AudioGraphPluginSDK 0.1.0 EXACT CONFIG REQUIRED)` 和 `AudioGraph::PluginSDK` 使用公开头 `audiograph/plugin.h`，无须链接 AudioGraph 核心。
 
-## 当前支持的节点描述
+## 整段同步节点描述
+
+以下字段说明针对 `ag.whole_sync/1`。新增实时处理器使用独立的 `ag.realtime_audio/1`，执行域、AudioStream端口及生命周期见[实时插件说明](plugin-realtime.md)，不能把两套执行接口混用。
 
 `nodes.json` 根字段为 `schema_version`（1）、`plugin_id`、`plugin_version`、`experimental`（true）、`production_ready`（false）和 `nodes`。这与 manifest 的包格式版本独立，不能因为 manifest 使用 v2 就把节点描述改成 v2。静态描述与 DLL 的 `describe_nodes` 返回描述必须一致；示例构建会把同一份 JSON 嵌入 DLL。
 
@@ -14,7 +16,7 @@
 - `parameters`：最多 32 项，ID 唯一。字段为 `id`、`type`、`required`，以及可选 `description`、`default`、`minimum`、`maximum`、`unit`、`enum`、`integer_only`。类型为小写 `number`、`text` 或 `boolean`；默认值必须匹配类型，范围值为数字，`integer_only` 为布尔值，`enum` 是最多 64 项的字符串数组。
 - `plugin`：`id`、`implementation_version`、`capabilities`、`experimental`、`production_ready`。身份和版本必须匹配根描述及 manifest；能力只能是 `[{"id":"ag.whole_sync/1","version":1}]`，标志必须分别为 `experimental: true` 和 `production_ready: false`。
 
-`typeId` 必须以 `plugin_id + "."` 开头。以示例 ID 的字符形式为起点；端口和参数 ID 最多 64 字节，typeId 最多 128 字节，displayName 最多 256 字节，description 最多 2048 字节。宿主会拒绝未知字段及不支持的类型。当前没有 FilePath 端口或参数、实时流或异步能力；头文件里的 `AG_FILE_PATH` 标签不代表当前宿主已开放该功能。
+`typeId` 必须以 `plugin_id + "."` 开头。以示例 ID 的字符形式为起点；端口和参数 ID 最多 64 字节，typeId 最多 128 字节，displayName 最多 256 字节，description 最多 2048 字节。宿主会拒绝未知字段及不支持的类型。当前没有插件FilePath端口/参数、普通离线streaming或异步能力；头文件里的 `AG_FILE_PATH` 标签不代表当前宿主已开放该功能。实时处理器单独协商，不使用本节的Audio整段端口。
 
 ## 默认参数怎样送到插件
 
@@ -71,7 +73,7 @@
 
 保持精确导出符号 `ag_plugin_get_api`、调用约定、结构布局、`AG_ABI_MAJOR`/`AG_ABI_MINOR` 和能力常量。不要用修改 ABI 或宿主的方式实现新算法。独立示例是 Gain 和模拟 ASR；模拟 ASR 不含真实识别、模型推理或网络请求。新算法须有自己的行为测试；开发包里的 SDK host 只测试原样示例。
 
-## 生命周期和计算
+## 整段同步生命周期和计算
 
 `create` 只做轻量参数验证和实例准备，失败时写空实例。模型加载、GPU 初始化、HTTP 请求等耗时工作放到 `run`，受其取消和截止时间预算约束。实例的 `run` 只执行一次，同一实例不会并发执行；不同实例可能并行。成功 create 后宿主调用一次 destroy，由插件释放自己的内存。所有导出函数和回调必须捕获自身 C++ 异常，不能穿过 C ABI。
 

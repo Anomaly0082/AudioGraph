@@ -172,6 +172,113 @@ fn linked_package_directory_cannot_expand_the_fixed_installation_scope() {
 
 #[cfg(windows)]
 #[test]
+#[ignore = "requires explicit trusted legacy normalizer package path; no devices or model API"]
+fn legacy_normalizer_binary_remains_compatible_with_realtime_capable_host() {
+    use crate::backend::Connection;
+    use crate::plugin_manager::PluginManager;
+    use std::sync::Arc;
+    let package = fs::canonicalize(std::env::var_os("AUDIOPROCESS_LEGACY_NORMALIZER_PACKAGE")
+        .expect("Supply the unchanged trusted normalizer package")).unwrap();
+    let fixture = Fixture::new();
+    let installer = PluginManager::default();
+    installer.initialize(&fixture.packages(), &fixture.data()).unwrap();
+    installer.install(&package, true).unwrap();
+    let restarted = PluginManager::default();
+    let snapshot = restarted.initialize(&fixture.packages(), &fixture.data()).unwrap();
+    let workspace = fixture.workspace("legacy-normalizer");
+    let mut wav = b"RIFF\x2c\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x44\xac\0\0\x88\x58\x01\0\x02\0\x10\0data\x08\0\0\0".to_vec();
+    for sample in [8192_i16, -8192, 4096, -4096] { wav.extend_from_slice(&sample.to_le_bytes()); }
+    fs::write(workspace.join("input.wav"), &wav).unwrap();
+    let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/Debug/control-cli.exe");
+    let sidecar = Connection::spawn_with_plugins(&exe, workspace.clone(), "legacy-normalizer".into(),
+        false, false, Arc::new(|_| {}), snapshot).unwrap();
+    let graph = serde_json::json!({"schema_version":1,"nodes":[
+        {"id":"input","type":"wav_input","parameters":{"path":"input.wav"}},
+        {"id":"normalize","type":"org.devkit.normalizer.peak_normalize_v1","parameters":{"target_peak_db":-6,"max_gain_db":12}},
+        {"id":"meter","type":"peak_meter"},
+        {"id":"output","type":"wav_output","parameters":{"path":"result.wav"}}
+    ],"connections":[
+        {"from":{"node":"input","port":"audio"},"to":{"node":"normalize","port":"audio"}},
+        {"from":{"node":"normalize","port":"audio"},"to":{"node":"meter","port":"audio"}},
+        {"from":{"node":"normalize","port":"audio"},"to":{"node":"output","port":"audio"}}
+    ],"exports":[{"name":"gain","node":"normalize","port":"applied_gain_db"},
+        {"name":"peak","node":"meter","port":"peak"},{"name":"file","node":"output","port":"path"}]});
+    let started = sidecar.request(serde_json::json!({"op":"tasks.start","mode":"offline","graph":graph})).unwrap();
+    assert_eq!(started["success"], true, "{started}");
+    let id = started["data"]["task_id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = sidecar.request(serde_json::json!({"op":"tasks.status","task_id":id})).unwrap();
+        if status["data"]["state"] == "succeeded" { break; }
+        assert!(matches!(status["data"]["state"].as_str(), Some("queued" | "running")), "{status}");
+        assert!(Instant::now() < deadline, "Legacy binary processing timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let result = sidecar.request(serde_json::json!({"op":"tasks.result","task_id":id})).unwrap();
+    let outputs = &result["data"]["result"]["outputs"];
+    assert!((outputs["gain"]["value"].as_f64().unwrap() - 6.0411998266).abs() < 0.00001);
+    assert!((outputs["peak"]["value"].as_f64().unwrap() - 10_f64.powf(-6.0/20.0)).abs() < 0.00001);
+    assert!(workspace.join("result.wav").is_file());
+    assert_eq!(fs::read(workspace.join("input.wav")).unwrap(), wav);
+    sidecar.shutdown("Legacy unchanged binary regression complete").unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn realtime_plugin_installs_and_is_discovered_without_expanding_ai_execution_modes() {
+    check_realtime_package("build/realtime-plugin-sdk-standalone/plugin-build/package/Debug",
+        "org.audiograph.realtime_example.gain_v1");
+}
+
+#[cfg(windows)]
+#[test]
+fn rnnoise_realtime_package_installs_and_is_discovered_without_device_or_ai_execution() {
+    check_realtime_package("build/rnnoise-realtime-sdk-standalone/plugin-build/package/Debug",
+        "org.audiograph.rnnoise.realtime_v1");
+}
+
+#[cfg(windows)]
+fn check_realtime_package(relative_package: &str, type_id: &str) {
+    use crate::backend::{BackendManager, Connection};
+    use crate::plugin_manager::PluginManager;
+    use crate::agent_tools::ToolContext;
+    use crate::tool_workspaces::ToolWorkspaces;
+    use std::sync::{Arc, atomic::AtomicBool};
+    tauri::async_runtime::block_on(async {
+        let fixture = Fixture::new();
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package = fs::canonicalize(project.join(relative_package))
+            .expect("Build the standalone realtime SDK sample first");
+        let installer = PluginManager::default();
+        installer.initialize(&fixture.packages(), &fixture.data()).unwrap();
+        let installed = installer.install(&package, true).unwrap();
+        assert!(installed.restart_required && !installed.entries[0].active);
+        let restarted = PluginManager::default();
+        let snapshot = restarted.initialize(&fixture.packages(), &fixture.data()).unwrap();
+        let workspace = fixture.workspace("audio");
+        let connection = Connection::spawn_with_plugins(&project.join("build/Debug/control-cli.exe"),
+            workspace.clone(), "realtime-catalog".into(), false, false, Arc::new(|_| {}), snapshot).unwrap();
+        let catalog = connection.request(serde_json::json!({"op":"nodes.list"})).unwrap();
+        assert_eq!(catalog["success"], true);
+        let node = catalog["data"]["nodes"].as_array().unwrap().iter()
+            .find(|node| node["typeId"] == type_id).unwrap();
+        assert_eq!(node["execution_domain"], "realtime");
+        assert_eq!(node["plugin"]["capabilities"][0]["id"], "ag.realtime_audio/1");
+        assert_eq!(node["inputs"][0]["type"], "AudioStream");
+        let ai_catalog = crate::ai::catalog_nodes(&catalog).unwrap();
+        assert!(!ai_catalog.iter().any(|node| node["typeId"] == type_id));
+        let manager = Arc::new(BackendManager::with_test_connection(connection));
+        let spaces = ToolWorkspaces::new(&workspace, &fixture.data()).unwrap();
+        let mut tools = ToolContext::new(spaces, manager.clone(), "realtime-catalog".into());
+        let result = tools.dispatch("workflow", "graph_run", &serde_json::json!({"mode":"realtime","graph":{}}), &AtomicBool::new(false)).await;
+        assert_eq!(result.unwrap_err(), "Graph mode must be offline or streaming",
+            "Realtime/device mode must stay unavailable to AI tools");
+        manager.shutdown().unwrap();
+    });
+}
+
+#[cfg(windows)]
+#[test]
 fn captured_real_sample_package_is_available_to_user_and_related_ai_sidecars_without_rescanning() {
     use crate::backend::{BackendManager,Connection,DisconnectCallback};
     use crate::plugin_manager::PluginManager;

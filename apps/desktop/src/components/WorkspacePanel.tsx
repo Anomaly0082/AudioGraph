@@ -1,4 +1,5 @@
 import type { AudioSession } from "../hooks/useAudioSession";
+import { workspaceDisplayPath, workspaceFolderName } from "../recent-workspaces";
 
 export default function WorkspacePanel({
   session,
@@ -13,7 +14,7 @@ export default function WorkspacePanel({
   aiBusy: boolean;
   onClose: () => void;
   onChoose: () => void;
-  onConnect: () => void;
+  onConnect: (path?: string) => void;
   onDisconnect: () => void;
   onSettings: () => void;
 }) {
@@ -55,7 +56,7 @@ export default function WorkspacePanel({
           <button
             className="primary"
             disabled={!session.desktop || locked || !session.workspace.trim()}
-            onClick={onConnect}
+            onClick={() => onConnect()}
           >
             打开工作区
           </button>
@@ -69,6 +70,25 @@ export default function WorkspacePanel({
       {aiBusy && (
         <p className="hint">请先结束当前操作，再切换工作区。</p>
       )}
+      <div className="recent-workspaces" aria-labelledby="recent-workspaces-title">
+        <div className="section-heading">
+          <h3 id="recent-workspaces-title">最近工作区</h3>
+          {(session.recentWorkspaces.paths.length > 0 || !!session.recentWorkspaces.warning) && (
+            <button disabled={!session.desktop || session.recentWorkspaces.busy} onClick={() => void session.recentWorkspaces.clear()}>清空记录</button>
+          )}
+        </div>
+        {session.recentWorkspaces.paths.length === 0 && <p className="hint">暂无最近工作区</p>}
+        {session.recentWorkspaces.paths.map((path) => (
+          <div className="recent-workspace-row" key={path}>
+            <button className="recent-workspace-open" title={workspaceDisplayPath(path)} disabled={!session.desktop || !!session.connection || locked || session.recentWorkspaces.busy} onClick={() => onConnect(path)}>
+              <strong>{workspaceFolderName(path)}</strong>
+              <span>{workspaceDisplayPath(path)}</span>
+            </button>
+            <button disabled={!session.desktop || session.recentWorkspaces.busy} aria-label={`移除记录 ${workspaceFolderName(path)}`} onClick={() => void session.recentWorkspaces.remove(path)}>移除</button>
+          </div>
+        ))}
+        {session.recentWorkspaces.warning && <p className="hint" role="alert">{session.recentWorkspaces.warning}</p>}
+      </div>
       <button className="text-button" onClick={onSettings}>
         查看设备权限设置
       </button>

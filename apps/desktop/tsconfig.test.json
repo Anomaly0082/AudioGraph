@@ -8,6 +8,7 @@
     "outDir": "../../build/desktop-model-tests"
   },
   "include": [
+    "src/hooks/useSessionState.ts",
     "src/model.ts",
     "src/ai-model.ts",
     "src/workflow-model.ts",

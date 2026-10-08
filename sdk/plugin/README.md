@@ -10,9 +10,13 @@ include/audiograph/plugin.h
 lib/cmake/AudioGraphPluginSDK/
 docs/plugin-development.md
 docs/plugin-packages.md
+docs/plugin-realtime.md
 examples/standalone/
+examples/realtime/
 examples/graphs/plugin-gain.json
+examples/graphs/plugin-realtime-gain.json
 tests/sdk-host/
+tests/realtime-sdk-host/
 scripts/verify-example.cmake
 ```
 
@@ -37,7 +41,9 @@ cmake --build C:/AudioGraphWork/my-plugin/build --config Debug
 
 阅读[节点开发约定](docs/plugin-development.md)和[插件包规范](docs/plugin-packages.md)。`examples/graphs/plugin-gain.json` 是配套示例 Graph；替换节点身份后也要调整 Graph 中的类型和参数。独立回归测试通过后，仍需在实际 AudioGraph 中安装、重启并验证发现、执行、取消及错误处理。
 
-节点开发约定还说明了宿主如何补齐默认参数，以及如何通过 Graph `exports` 取得 Number 输出；数值导出不需要转换成文件。本开发包文档修订于 2026-10-02（r2），SDK/CMake 包版本及 C ABI 仍为 0.1.0/0.1，没有接口变更。
+节点开发约定还说明了宿主如何补齐默认参数，以及如何通过离线 Graph `exports` 取得 Number 输出；数值导出不需要转换成文件。
+
+本套件为2026-10-03实时能力增量版（r3）。SDK/CMake包版本及基础C ABI仍为0.1.0/0.1，旧表布局不变；新增可选 `ag.realtime_audio/1`，需要新版SDK头和宿主，不能仅凭基础版本推断支持。实时示例及限制见[实时插件说明](docs/plugin-realtime.md)。可用 `cmake -DEXAMPLE=realtime -DWORK_ROOT=C:/Temp/AudioGraph-rt-check -P ./scripts/verify-example.cmake` 做不打开设备的测试；该目录同样必须尚不存在。原样同步和实时测试host都只验证对应示例，不是任意插件的通用认证。
 
 可将下面的任务交给另一个 AI：
 

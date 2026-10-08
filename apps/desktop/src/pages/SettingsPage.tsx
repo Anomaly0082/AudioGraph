@@ -9,11 +9,13 @@ export default function SettingsPage({
   session,
   plugins,
   workflowBusy,
+  onPermissions,
 }: {
   settings: AiSettings;
   session: AudioSession;
   plugins: PluginManager;
   workflowBusy: boolean;
+  onPermissions: (desired: { allowDevices: boolean; allowMonitor: boolean }) => void;
 }) {
   return (
     <div className="page-stack settings-page">
@@ -29,17 +31,16 @@ export default function SettingsPage({
           <span className="badge">只影响实时任务</span>
         </div>
         <p className="hint top-hint">
-          文件处理无需设备权限。以下选项在打开工作区时生效，已连接时不能悄悄扩大权限。
+          文件处理无需设备权限。已连接时更改权限会重新连接当前工作区。
         </p>
         <div className="permission-options">
           <label className="checkbox-label">
             <input
               type="checkbox"
               checked={session.allowDevices}
-              disabled={!!session.connection || !!session.busy || workflowBusy}
+              disabled={!!session.busy || workflowBusy}
               onChange={(event) => {
-                session.setAllowDevices(event.target.checked);
-                if (!event.target.checked) session.setAllowMonitor(false);
+                onPermissions({ allowDevices: event.target.checked, allowMonitor: session.allowMonitor });
               }}
             />
             允许音频设备访问
@@ -50,17 +51,18 @@ export default function SettingsPage({
               checked={session.allowMonitor}
               disabled={
                 !session.allowDevices ||
-                !!session.connection ||
                 !!session.busy ||
                 workflowBusy
               }
               onChange={(event) =>
-                session.setAllowMonitor(event.target.checked)
+                onPermissions({ allowDevices: session.allowDevices, allowMonitor: event.target.checked })
               }
             />
             允许有声输出
           </label>
         </div>
+        {session.busy === "更新设备权限中" && <p className="hint" role="status">正在更新权限并重新连接…</p>}
+        {workflowBusy && <p className="hint">请先停止或等待 AI、Workflow 和当前编辑操作完成，再更改权限。</p>}
         <p className="hint">
           设备不会在打开工作区时启动。有声执行仍需要再次确认；请使用耳机、调低音量以避免啸叫。
         </p>

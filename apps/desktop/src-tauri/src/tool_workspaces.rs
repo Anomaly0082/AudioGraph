@@ -37,7 +37,7 @@ fn is_reparse(meta: &Metadata) -> bool {
     false
 }
 
-fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
+pub(crate) fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -74,7 +74,7 @@ fn is_hardlinked(path: &Path, meta: &Metadata) -> bool {
     { let _ = (path, meta); true }
 }
 
-fn normal_metadata(path: &Path) -> Result<Option<Metadata>, String> {
+pub(crate) fn normal_metadata(path: &Path) -> Result<Option<Metadata>, String> {
     match fs::symlink_metadata(path) {
         Ok(meta) if is_reparse(&meta) => Err("Links and reparse points are not allowed".into()),
         Ok(meta) => Ok(Some(meta)),
@@ -83,7 +83,7 @@ fn normal_metadata(path: &Path) -> Result<Option<Metadata>, String> {
     }
 }
 
-fn check_existing_chain(path: &Path) -> Result<(), String> {
+pub(crate) fn check_existing_chain(path: &Path) -> Result<(), String> {
     use std::path::Component;
     let mut current = PathBuf::new();
     for part in path.components() {
@@ -267,7 +267,7 @@ fn create_user_parent(root: &Path, target: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn temp_file(parent: &Path) -> Result<(PathBuf, File), String> {
+pub(crate) fn temp_file(parent: &Path) -> Result<(PathBuf, File), String> {
     for _ in 0..32 {
         let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let name = format!(".agent-tmp-{}-{serial}", std::process::id());
@@ -282,7 +282,7 @@ fn temp_file(parent: &Path) -> Result<(PathBuf, File), String> {
 }
 
 #[cfg(windows)]
-fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "Kernel32")]
     unsafe extern "system" {
@@ -296,7 +296,7 @@ fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
+pub(crate) fn replace_file(temp: &Path, target: &Path) -> Result<(), String> {
     fs::rename(temp, target).map_err(|e| io_error("Cannot replace AI file", e))
 }
 
@@ -437,6 +437,32 @@ impl ToolWorkspaces {
         result?;
         removed?;
         Ok(json!({"space":space,"path":path}))
+    }
+
+    // Only the manual editor calls this revision-aware writer. AI dispatch keeps
+    // its existing file tools and has no expectedRevision/overwrite capability.
+    pub(crate) fn write_editor_text(&self, space: &str, path: &str, text: &str, expected: Option<&str>) -> Result<Value,String> {
+        if text.len() as u64 > TEXT_LIMIT { return Err("Text exceeds 64 KiB".into()); }
+        let (_,revision) = crate::editor_file::save(text.as_bytes(),expected,TEXT_LIMIT as usize, |prepare| {
+            let target = self.file_path(space,path,true)?;
+            let existing = normal_metadata(&target)?;
+            if expected.is_some() && existing.is_none() { return Err(crate::editor_file::CONFLICT.into()); }
+            // Check before staging: the late scan would count our own temp
+            // snapshot in addition to the final file's proposed size.
+            if prepare && space == "ai" {
+                let old = existing.as_ref().map_or(0,Metadata::len);
+                if self.quota_size()?.saturating_sub(old).checked_add(text.len() as u64).is_none_or(|size| size > AI_QUOTA) {
+                    return Err("AI quota exceeded".into());
+                }
+            }
+            if prepare && expected.is_none() {
+                if existing.is_some() { return Err("Save as must create a new file; target already exists".into()); }
+                if space == "ai" { create_ai_parents(&self.ai_root,&target)?; }
+                else { create_user_parent(&self.user_root,&target)?; }
+            }
+            self.file_path(space,path,true)
+        })?;
+        Ok(json!({"space":space,"path":path,"revision":revision}))
     }
 
     pub(crate) fn list_workspace_bounded(&self,space: &str,path: &str,offset: usize,limit: usize,

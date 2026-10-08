@@ -23,6 +23,7 @@ import type {
   TaskView,
 } from "../types/desktop";
 import { cloneSubmission } from "../workflow-model";
+import { useRecentWorkspaces } from "./useRecentWorkspaces";
 import {
   createTaskFinalizer,
   mergeTaskView,
@@ -38,9 +39,17 @@ const emptyDevices = (): DeviceCatalog => ({ inputs: [], outputs: [] });
 
 export function useAudioSession() {
   const desktop = desktopAvailable();
-  const [workspace, setWorkspace] = useState("");
+  const recentWorkspaces = useRecentWorkspaces(desktop);
+  const [workspace, setWorkspaceState] = useState("");
+  const workspaceRef = useRef("");
+  function setWorkspace(value: string) {
+    workspaceRef.current = value;
+    setWorkspaceState(value);
+  }
   const [allowDevices, setAllowDevicesState] = useState(false);
   const [allowMonitor, setAllowMonitorState] = useState(false);
+  const permissionsRef = useRef({ allowDevices: false, allowMonitor: false });
+  const reconnectRef = useRef<{ target: Connection; epoch: number; expectedExit: boolean; exitObserved: boolean } | null>(null);
   const [connection, setConnectionState] = useState<Connection | null>(null);
   const connectionRef = useRef<Connection | null>(null);
   const epochRef = useRef(0);
@@ -61,12 +70,10 @@ export function useAudioSession() {
   const cleanupBusy = task?.sessionId === connection?.sessionId && !!task?.cleanupBusy;
   const cleanupError = task?.sessionId === connection?.sessionId ? task?.cleanupError ?? "" : "";
 
-  function setAllowDevices(value: boolean) {
-    setAllowDevicesState(value);
-    if (!value) setAllowMonitorState(false);
-  }
-  function setAllowMonitor(value: boolean) {
-    setAllowMonitorState(value && allowDevices);
+  function commitPermissions(value: { allowDevices: boolean; allowMonitor: boolean }) {
+    permissionsRef.current = value;
+    setAllowDevicesState(value.allowDevices);
+    setAllowMonitorState(value.allowMonitor);
   }
   function setConnected(value: Connection | null) {
     connectionRef.current = value;
@@ -79,6 +86,9 @@ export function useAudioSession() {
   }
   function disconnectState(sessionId: string, message: string) {
     if (connectionRef.current?.sessionId !== sessionId) return;
+    if (reconnectRef.current?.target === connectionRef.current && reconnectRef.current.expectedExit) {
+      return;
+    }
     epochRef.current++;
     setConnected(null);
     setDevices(emptyDevices());
@@ -96,6 +106,8 @@ export function useAudioSession() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     listenBackendDisconnected((event) => {
+      if (reconnectRef.current?.target.sessionId === event.sessionId && reconnectRef.current.expectedExit)
+        reconnectRef.current.exitObserved = true;
       deadSessions.current.set(event.sessionId, !!event.forced);
       if (deadSessions.current.size > 32)
         deadSessions.current.delete(deadSessions.current.keys().next().value!);
@@ -164,6 +176,8 @@ export function useAudioSession() {
     }
   }
   function readCurrentTask(identity: TaskIdentity): TaskView | null {
+    const transition = reconnectRef.current;
+    if (transition?.expectedExit && transition.target === connectionRef.current && transition.target.sessionId === identity.sessionId && transition.epoch === identity.epoch) return null;
     const previous = taskRef.current;
     if (
       !previous ||
@@ -215,6 +229,10 @@ export function useAudioSession() {
           target,
         );
         const current = taskRef.current;
+        if (reconnectRef.current?.target === target && reconnectRef.current.expectedExit) {
+          if (!disposed) timer = setTimeout(tick, 500);
+          return;
+        }
         if (
           disposed ||
           !current ||
@@ -234,6 +252,10 @@ export function useAudioSession() {
         if (!disposed) timer = setTimeout(tick, 500);
       } catch (reason) {
         const current = taskRef.current;
+        if (reconnectRef.current?.target === target && reconnectRef.current.expectedExit) {
+          if (!disposed) timer = setTimeout(tick, 500);
+          return;
+        }
         if (
           disposed ||
           !current ||
@@ -252,21 +274,23 @@ export function useAudioSession() {
   }, [connection?.sessionId, task?.id, task?.state, taskActive]);
 
   async function chooseWorkspace(): Promise<string | null> {
-    if (connectionRef.current)
-      throw new Error("请先断开当前工作区连接；活动任务断开前需要确认取消。");
-    const selected = await chooseWorkspaceDirectory();
-    if (selected) setWorkspace(selected);
-    return selected;
+    return perform("选择目录中", async () => {
+      if (connectionRef.current)
+        throw new Error("请先断开当前工作区连接；活动任务断开前需要确认取消。");
+      const selected = await chooseWorkspaceDirectory();
+      if (selected) setWorkspace(selected);
+      return selected;
+    });
   }
-  async function connectBackend(): Promise<void> {
+  async function connectBackend(explicitPath?: string): Promise<void> {
     await perform("连接中", async () => {
       if (connectionRef.current)
         throw new Error("请先断开当前工作区连接；活动任务断开前需要确认取消。");
       const epoch = ++epochRef.current;
       const value = await connectDesktop(
-        workspace.trim(),
-        allowDevices,
-        allowMonitor,
+        explicitPath ?? workspaceRef.current.trim(),
+        permissionsRef.current.allowDevices,
+        permissionsRef.current.allowMonitor,
       );
       if (
         epoch !== epochRef.current ||
@@ -287,6 +311,70 @@ export function useAudioSession() {
       setWorkspace(value.workspace);
       setDevices(emptyDevices());
       setNotice("后端已连接。设备没有被自动打开，请先校验当前 Graph。");
+      await recentWorkspaces.remember(value.sessionId);
+    });
+  }
+  async function applyPermissions(desired: { allowDevices: boolean; allowMonitor: boolean }, blocked?: () => boolean): Promise<void> {
+    const requested = { allowDevices: desired.allowDevices, allowMonitor: desired.allowDevices && desired.allowMonitor };
+    await perform("更新设备权限中", async () => {
+      if (blocked?.()) throw new Error("请先停止或等待 AI、Workflow 和当前编辑操作完成，再更新设备权限。");
+      const current = permissionsRef.current;
+      if (current.allowDevices === requested.allowDevices && current.allowMonitor === requested.allowMonitor) return;
+      const target = connectionRef.current;
+      if (!target) { commitPermissions(requested); return; }
+      const epoch = epochRef.current;
+      const path = target.workspace;
+      const workspaceSnapshot = workspaceRef.current;
+      const isOriginal = () => connectionRef.current === target && epochRef.current === epoch && workspaceRef.current === workspaceSnapshot;
+      if (taskBlocksSubmission(taskRef.current, target.sessionId) && !(await confirmDesktop(
+        "更新权限会停止并取消当前任务，然后重新连接同一工作区。未完成输出文件会保留，任务不会自动重跑。继续？",
+        "更新设备权限",
+      ))) return;
+      if (!isOriginal()) throw new Error("连接或工作区已变化，未更新设备权限。");
+      if (blocked?.()) throw new Error("请先停止或等待 AI、Workflow 和当前编辑操作完成，再更新设备权限。");
+      const transition = { target, epoch, expectedExit: true, exitObserved: false };
+      reconnectRef.current = transition;
+      try {
+        const report = await disconnectDesktop(target.sessionId);
+        if (report.forced) setForcedWarning(`旧后端会话已强制结束，可能保留部分输出文件。${report.message}`);
+        if (!isOriginal()) throw new Error("连接或工作区已变化，未自动重新连接。");
+        const reconnectEpoch = ++epochRef.current;
+        setConnected(null);
+        setDevices(emptyDevices());
+        const previous = taskRef.current;
+        if (previous && !isTerminal(previous.state)) setTask({ ...previous, state: "unknown" });
+        commitPermissions(requested);
+        setWorkspace(path);
+        transition.expectedExit = false;
+        const value = await connectDesktop(path, requested.allowDevices, requested.allowMonitor);
+        if (epochRef.current !== reconnectEpoch || connectionRef.current || workspaceRef.current !== path || deadSessions.current.has(value.sessionId) || value.sessionId === target.sessionId || value.workspace !== path) {
+          throw new Error("连接或工作区已变化，新的连接响应已忽略。请重新连接。");
+        }
+        ownedSessions.current.add(value.sessionId);
+        if (ownedSessions.current.size > 32) ownedSessions.current.delete(ownedSessions.current.values().next().value!);
+        if (value.previousForcedDisconnect) setForcedWarning("旧后端已强制结束，可能保留部分输出文件；旧任务不会自动重跑。");
+        setConnected(value);
+        setNotice("设备权限已更新，工作区已重新连接。设备和任务不会自动启动。");
+        await recentWorkspaces.remember(value.sessionId);
+      } catch (reason) {
+        if (transition.exitObserved && isOriginal()) {
+          epochRef.current++;
+          setConnected(null);
+          setDevices(emptyDevices());
+          const previous = taskRef.current;
+          if (previous && !isTerminal(previous.state)) setTask({ ...previous, state: "unknown" });
+          commitPermissions(requested);
+          setWorkspace(path);
+        }
+        throw reason;
+      } finally {
+        if (reconnectRef.current === transition) {
+          reconnectRef.current = null;
+          const previous = taskRef.current;
+          if (isOriginal() && previous?.sessionId === target.sessionId && previous.cleanupBusy)
+            setTask({ ...previous, cleanupBusy: false, cleanupError: "任务收尾被权限更新中断，请重试收尾。" });
+        }
+      }
     });
   }
   async function disconnectBackend(): Promise<void> {
@@ -510,12 +598,12 @@ export function useAudioSession() {
   }
   return {
     desktop,
+    recentWorkspaces,
     workspace,
     setWorkspace,
     allowDevices,
-    setAllowDevices,
     allowMonitor,
-    setAllowMonitor,
+    applyPermissions,
     connection,
     task,
     taskActive,

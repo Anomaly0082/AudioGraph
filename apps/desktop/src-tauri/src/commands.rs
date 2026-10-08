@@ -220,11 +220,11 @@ pub async fn load_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id
 }
 
 #[tauri::command]
-pub async fn save_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, path: String, graph: Value) -> Result<SavedGraph, String> {
+pub async fn save_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, path: String, graph: Value, expected_revision: Option<String>) -> Result<SavedGraph, String> {
     let manager = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let workspace = manager.workspace(&session_id)?;
-        crate::graph_files::save_graph_file(&workspace, &path, &graph)
+        crate::graph_files::save_graph_file_with_revision(&workspace, &path, &graph, expected_revision.as_deref())
     }).await.map_err(|e| format!("保存Graph失败：{e}"))?
 }
 

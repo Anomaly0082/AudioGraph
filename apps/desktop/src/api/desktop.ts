@@ -10,6 +10,12 @@ import type {
 } from "../types/desktop";
 
 export const desktopAvailable = isTauri;
+export function listenSessionClose(callback: (requestId: string) => void): Promise<() => void> {
+  return listen<{ requestId: string }>("session-state-close-requested", event => callback(event.payload.requestId));
+}
+export function listenSessionCloseCancelled(callback: (requestId: string) => void): Promise<() => void> {
+  return listen<{ requestId: string }>("session-state-close-cancelled", event => callback(event.payload.requestId));
+}
 export const invokeDesktop = <T>(
   command: string,
   args: Record<string, unknown> = {},
@@ -46,15 +52,16 @@ export function requireSuccess<T>(reply: Reply<T>): T {
 export function loadGraphDesktop(
   sessionId: string,
   path: string,
-): Promise<{ path: string; graph: unknown }> {
+): Promise<{ path: string; graph: unknown; revision: string }> {
   return invokeDesktop("load_graph", { sessionId, path });
 }
 export function saveGraphDesktop(
   sessionId: string,
   path: string,
   graph: GraphDocument,
-): Promise<{ path: string }> {
-  return invokeDesktop("save_graph", { sessionId, path, graph });
+  expectedRevision?: string,
+): Promise<{ path: string; revision: string }> {
+  return invokeDesktop("save_graph", { sessionId, path, graph, expectedRevision });
 }
 export async function chooseWorkspaceDirectory(): Promise<string | null> {
   const selected = await open({
@@ -96,6 +103,12 @@ export function chooseNewGraphFile(workspace: string): Promise<string | null> {
   return save({
     defaultPath: `${workspace}/graph-new.json`,
     filters: [{ name: "Graph JSON", extensions: ["json"] }],
+  });
+}
+export function chooseNewWorkflowFile(workspace: string): Promise<string | null> {
+  return save({
+    defaultPath: `${workspace}/workflow-new.workflow.json`,
+    filters: [{ name: "Workflow JSON", extensions: ["json"] }],
   });
 }
 export function confirmDesktop(

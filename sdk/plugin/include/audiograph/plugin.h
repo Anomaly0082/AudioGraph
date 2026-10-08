@@ -31,6 +31,8 @@ extern "C" {
 #define AG_ABI_MINOR 1u
 #define AG_WHOLE_SYNC_ID "ag.whole_sync/1"
 #define AG_WHOLE_SYNC_VERSION 1u
+#define AG_REALTIME_AUDIO_ID "ag.realtime_audio/1"
+#define AG_REALTIME_AUDIO_VERSION 1u
 #define AG_NO_DEADLINE UINT64_MAX
 
 typedef uint32_t ag_status;
@@ -177,11 +179,66 @@ typedef struct ag_whole_sync_api {
     ag_destroy_fn destroy;
 } ag_whole_sync_api;
 
+/* Optional realtime processor capability. It does not change the ABI 0.1
+ * tables above. Old hosts/plugins may reject this capability explicitly.
+ * create uses ag_create_info and lightweight initialization as above; prepare
+ * runs on the control thread before devices start and may allocate/read owned
+ * resources. A successful create is destroyed once even if prepare fails.
+ * A new processing session uses a fresh instance; parameters are immutable. */
+typedef struct ag_realtime_prepare_info {
+    uint32_t struct_size;
+    uint32_t reserved;
+    uint32_t sample_rate;
+    uint32_t channel_count;
+    uint32_t maximum_frames;
+    uint32_t reserved2;
+} ag_realtime_prepare_info;
+
+/* Borrowed writable interleaved float32. Keep format and both counts unchanged.
+ * 1..maximum_frames per call; sample_count = frame_count * prepared channels.
+ * Do not retain this structure or its samples beyond process returning. */
+typedef struct ag_realtime_block {
+    uint32_t struct_size;
+    uint32_t reserved;
+    uint64_t frame_count;
+    uint64_t sample_count;
+    float* samples;
+} ag_realtime_block;
+
+/* Separate numeric-only realtime result domain, not ag_status. Unknown values
+ * are node failures. No error text/sink callbacks run on the audio thread. */
+typedef uint32_t ag_realtime_status;
+#define AG_RT_OK                 0u
+#define AG_RT_NOT_PREPARED       1u
+#define AG_RT_INVALID_BLOCK      2u
+#define AG_RT_NON_FINITE_INPUT   3u
+#define AG_RT_NODE_FAILED        4u
+#define AG_RT_NON_FINITE_OUTPUT  5u
+typedef ag_status (AG_CALL *ag_realtime_prepare_fn)(ag_instance* instance,
+    const ag_realtime_prepare_info* info, const ag_error_sink* errors);
+/* Serialized for one instance. Bounded, no allocation/deallocation, blocking,
+ * locks, file/network/device I/O, logging, hash/JSON work or escaping exceptions.
+ * May retain private algorithm state, never borrowed audio. Failure may have
+ * modified samples; host discards/mutes that output and stops off-callback.
+ * No hard deadline/kill guarantee is possible for non-cooperating native code. */
+typedef ag_realtime_status (AG_CALL *ag_realtime_process_fn)(ag_instance* instance,
+    const ag_realtime_block* block);
+typedef struct ag_realtime_audio_api {
+    uint32_t struct_size;
+    uint32_t version;
+    ag_create_fn create;
+    ag_realtime_prepare_fn prepare;
+    ag_realtime_process_fn process;
+    ag_destroy_fn destroy; /* Control thread only, after all callbacks exit. */
+} ag_realtime_audio_api;
+
 typedef ag_status (AG_CALL *ag_receive_description_fn)(void* user, ag_string json);
 typedef ag_status (AG_CALL *ag_describe_nodes_fn)(void* user, ag_receive_description_fn receive);
 /* Exact capability/version selection, never silent fallback to a different
- * execution model. Unknown capability -> AG_UNSUPPORTED. ABI 0.1 supports only
- * ag.whole_sync/1. On failure, do not write output table bytes. On success write
+ * execution model. Unknown capability -> AG_UNSUPPORTED. The base ABI 0.1 can
+ * query ag.whole_sync/1 or optional ag.realtime_audio/1; availability must be
+ * negotiated, not inferred from the base ABI. On failure, do not write output
+ * table bytes. On success write
  * only sizeof(selected table); never touch the caller's trailing guard bytes. */
 typedef ag_status (AG_CALL *ag_get_node_api_fn)(ag_string type_id,
     ag_string capability, uint32_t capability_version, uint32_t out_size, void* out_api);
@@ -235,6 +292,9 @@ AG_STATIC_ASSERT(sizeof(ag_instance_environment) == 40, "environment layout");
 AG_STATIC_ASSERT(sizeof(ag_create_info) == 32, "create layout");
 AG_STATIC_ASSERT(sizeof(ag_call_context) == 56, "context layout");
 AG_STATIC_ASSERT(sizeof(ag_whole_sync_api) == 32, "whole sync API layout");
+AG_STATIC_ASSERT(sizeof(ag_realtime_prepare_info) == 24 && offsetof(ag_realtime_prepare_info, maximum_frames) == 16, "realtime prepare layout");
+AG_STATIC_ASSERT(sizeof(ag_realtime_block) == 32 && offsetof(ag_realtime_block, samples) == 24, "realtime block layout");
+AG_STATIC_ASSERT(sizeof(ag_realtime_audio_api) == 40 && offsetof(ag_realtime_audio_api, process) == 24, "realtime API layout");
 AG_STATIC_ASSERT(sizeof(ag_plugin_api) == 64 && offsetof(ag_plugin_api, get_node_api) == 56, "plugin API layout");
 #undef AG_STATIC_ASSERT
 #undef AG_ALIGNOF

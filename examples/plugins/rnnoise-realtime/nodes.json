@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "plugin_id": "org.audiograph.rnnoise",
+  "plugin_version": "0.1.0",
+  "experimental": true,
+  "production_ready": false,
+  "nodes": [{
+    "typeId": "org.audiograph.rnnoise.realtime_v1",
+    "displayName": "Realtime RNNoise",
+    "description": "Experimental RNNoise v0.2 denoiser; 48 kHz mono float32 in [-1,1], 30 ms delay, no stop flush.",
+    "execution_domain": "realtime",
+    "stream_role": "none",
+    "realtime_role": "processor",
+    "inputs": [{"id": "audio", "type": "AudioStream", "required": true}],
+    "outputs": [{"id": "audio", "type": "AudioStream", "required": true}],
+    "parameters": [],
+    "realtime_capabilities": {
+      "format": {"sample_rate": 48000, "channels": 1, "sample_type": "float32", "layout": "interleaved"},
+      "maximum_block_frames": 65536,
+      "supports_variable_blocks": true,
+      "offline_drivable": true
+    },
+    "plugin": {
+      "id": "org.audiograph.rnnoise",
+      "implementation_version": "0.1.0",
+      "capabilities": [{"id": "ag.realtime_audio/1", "version": 1}],
+      "experimental": true,
+      "production_ready": false
+    }
+  }]
+}

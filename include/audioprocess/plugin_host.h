@@ -26,8 +26,8 @@ inline constexpr std::uint64_t plugin_text_output_limit = 64ull * 1024;
 }
 } // namespace detail
 
-// Registers only statically validated whole-value node contracts. The plugin
-// DLL is first loaded by a node factory at execution time, after file identity
+// Registers statically validated whole-value and realtime node contracts. The plugin
+// DLL is first loaded at execution/prepare time, after file identity
 // is checked again. Native plugins are trusted code, not a process sandbox.
 [[nodiscard]] std::string register_plugin_nodes(NodeRegistry& registry, const PluginHostOptions& options);
 

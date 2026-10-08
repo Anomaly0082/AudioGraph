@@ -134,13 +134,15 @@ Windows x64 CMake 构建会复制 control-cli Sidecar 到 `src-tauri/binaries`�
 第三方开发或交给其他AI编程工具时，优先使用独立开发套件，不需要提供整个仓库。从仓库根目录导出到一个尚不存在的绝对路径：
 
 ```powershell
-$destination = Join-Path (Get-Location).Path "out/plugin-devkit/AudioGraphPluginSDK-0.1.0-docs-r2"
+$destination = Join-Path (Get-Location).Path "out/plugin-devkit/AudioGraphPluginSDK-0.1.0-realtime-r3"
 cmake "-DOUTPUT_DIR=$destination" -P scripts/export_plugin_devkit.cmake
 ```
 
 导出目录包含已安装的SDK、[快速开始](sdk/plugin/README.md)、[节点开发约定](docs/plugin-development.md)、包规范、独立示例和示例回归脚本，可整体移动或转交。已有目录会明确拒绝，不覆盖；重新导出请选择新路径。仓库内只允许导出到build/或out/下，避免把生成文件混入SDK源文件。移位构建验证：`ctest --test-dir build -C Debug -R plugin-devkit-relocated --output-on-failure`。此套件不含主程序、密钥、构建缓存或预编译算法；示例回归不是任意新插件的通用认证。
 
 `sdk/plugin/include/audiograph/plugin.h` 是独立的 C ABI 0.1 头文件，覆盖整段同步节点的描述、能力查询、创建、运行和销毁。普通参数用具名、带类型的 C 值视图传递，不要求插件引入 JSON 解析器。插件内部仍可用 C++ 和自己的算法库；输入只读借用，输出通过同步回调复制到宿主内存。ABI 0.x 尚未冻结，不是沙箱，不承诺任意工具链兼容。
+
+新增可选 `ag.realtime_audio/1`，旧whole_sync和common函数表布局不变。`examples/plugins/realtime/` 独立Gain使用create/prepare/process/destroy，复用现有实时Executor；首版限48kHz单声道线性处理器，回调内不分配、不阻塞、不访问文件或网络。实时包由 `ctest --test-dir build -C Debug -R realtime-plugin-sdk-standalone --output-on-failure` 构建到 `build/realtime-plugin-sdk-standalone/plugin-build/package/Debug/`；样例Graph见 `examples/graphs/plugin-realtime-gain.json`，设备ID须手动选择。规范与手动验收见[实时插件说明](docs/plugin-realtime.md)。AI工具不因该能力获得设备权限。
 
 `examples/plugins/standalone/` 是只依赖安装后 SDK 的外部项目：自有辅助DLL、随包增益配置、增益节点和明确标记为模拟的音频转文本节点，没有真实 ASR、HTTP 或 GPU 实现。`tests/plugin_sdk/` 仍是独立C11/C++测试宿主；正式接入现在由 `src/plugin_host.cpp` 完成，通过现有注册表和同步Executor运行，不把插件算法编译进主程序。新版包格式及限制见[插件依赖与资源](docs/plugin-packages.md)。
 
@@ -168,7 +170,7 @@ SDK也可单独安装后由第三方项目消费：`cmake -S sdk/plugin -B build
 - 应用启动时一次捕获最多16个直接子包的manifest指纹；用户和AI后台共享同一快照，重连不重扫。安装、更新或移除后需要重启。缺manifest、链接目录、扫描超限等快照捕获错误会拒绝连接并给出目录；可读取但内容无效的单包由C++报告诊断，保留内置节点。
 - 静态发现/Graph校验不加载DLL，首次执行才核验ABI、身份及描述并加载；manifest及所有声明成员的文件句柄保持到对应后台进程退出。重复plugin_id/type或DLL基名冲突涉及的包全部拒绝，不按扫描顺序选版本。SHA256用于变化检测，不是签名或可信认证。
 - 包格式v2支持入口DLL、nodes.json、自带辅助DLL及resources/下的资源，所有声明成员纳入指纹与运行前校验，资源根通过既有environment接口提供。辅助DLL须使用插件ID前缀，选用集合内DLL基名冲突明确拒绝；仍不承诺任意第三方DLL依赖组合完全隔离。v1两文件包继续兼容，C ABI不变。当前每个资源/DLL最多256MiB、包声明内容合计1GiB，详细路径/容量规则见[包规范](docs/plugin-packages.md)。
-- 支持整段同步Audio/Text/Number端口及Number/Text/Boolean参数；明确拒绝外部FilePath声明、流式/实时/异步能力。文件读写继续用内置节点组合。插件仍能自行调用本机库或HTTP；原生代码不受AI文件工具权限沙箱约束，不能保证其不上传音频。
+- 整段同步支持Audio/Text/Number端口及Number/Text/Boolean参数；实时处理器使用独立AudioStream契约。明确拒绝外部FilePath声明、普通离线流式/异步插件能力。文件读写继续用内置节点组合。插件仍能自行调用本机库或HTTP，但这些阻塞操作不能发生在实时process中；原生代码不受AI文件工具权限沙箱约束，不能保证其不上传音频。
 - 为避免单次节点发现撑满AI上下文，完整节点目录（含内置）暂限32KiB；超额包明确拒绝，不静默截断参数。目录分页与更多类型可后续扩展。单次插件输入/音频输出各限256MiB，所有Text输出合计限64KiB，无Audio输出的节点总输出预算也为64KiB；超限明确失败，不把大文本塞断结果通道。调用协作期限60秒，不承诺硬抢占；失控插件可能使当前后台进程中断。
 - 节点目录及运行配置中的node_plugins保存插件ID、实现版本和manifest指纹；不会把私有目录或凭据当作节点元数据发送给AI。缺失类型在编辑器中保留节点、原参数、连线和导出设置，允许JSON编辑及另存，但不能提交，连线暂为只读。恢复兼容插件并重启后可重新校验；不自动迁移配置。历史版本自动比对及依赖锁定仍待后续接入。
 

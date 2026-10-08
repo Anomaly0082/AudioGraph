@@ -51,8 +51,8 @@ if(refusal EQUAL 0 OR NOT "${output}${error}" MATCHES "Refusing existing OUTPUT_
    OR NOT sentinel STREQUAL "existing incomplete output\n" OR NOT incomplete_files STREQUAL "sentinel.txt")
     message(FATAL_ERROR "Export must preserve and refuse an incomplete existing destination")
 endif()
-set(allowed README.md docs/plugin-packages.md docs/plugin-development.md
-    examples/graphs/plugin-gain.json scripts/verify-example.cmake
+set(allowed README.md docs/plugin-packages.md docs/plugin-development.md docs/plugin-realtime.md
+    examples/graphs/plugin-gain.json examples/graphs/plugin-realtime-gain.json scripts/verify-example.cmake
     include/audiograph/plugin.h
     lib/cmake/AudioGraphPluginSDK/AudioGraphPluginSDKTargets.cmake
     lib/cmake/AudioGraphPluginSDK/AudioGraphPluginSDKConfig.cmake
@@ -64,6 +64,12 @@ foreach(relative IN ITEMS CMakeLists.txt nodes.json cmake/manifest.json.in
 endforeach()
 foreach(relative IN ITEMS CMakeLists.txt host.cpp abi_c11.c)
     list(APPEND allowed "tests/sdk-host/${relative}")
+endforeach()
+foreach(relative IN ITEMS CMakeLists.txt nodes.json src/plugin.cpp cmake/manifest.json.in cmake/node_description.h.in cmake/package.cmake)
+    list(APPEND allowed "examples/realtime/${relative}")
+endforeach()
+foreach(relative IN ITEMS CMakeLists.txt host.cpp abi_c11.c allocations.cpp)
+    list(APPEND allowed "tests/realtime-sdk-host/${relative}")
 endforeach()
 list(SORT allowed)
 list(SORT files_after)
@@ -81,4 +87,6 @@ foreach(path IN LISTS metadata)
 endforeach()
 file(RENAME "${exported}" "${relocated}" NO_REPLACE)
 checked("${CMAKE_COMMAND}" "-DWORK_ROOT=${run_root}/verification"
+    ${options} "-DCONFIG=${CONFIG}" -P "${relocated}/scripts/verify-example.cmake")
+checked("${CMAKE_COMMAND}" "-DWORK_ROOT=${run_root}/realtime-verification" -DEXAMPLE=realtime
     ${options} "-DCONFIG=${CONFIG}" -P "${relocated}/scripts/verify-example.cmake")

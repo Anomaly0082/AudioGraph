@@ -1,6 +1,7 @@
 #include "audioprocess/plugin_host.h"
 #include "audioprocess/execution_error.h"
 #include "audioprocess/graph_codec.h"
+#include "audioprocess/realtime_node.h"
 #include <audiograph/plugin.h>
 #include <nlohmann/json.hpp>
 
@@ -291,11 +292,13 @@ struct Package {
     std::string plugin_id;
     std::string plugin_version;
     std::vector<NodeDescriptor> descriptors;
+    std::set<std::string> capabilities;
     fs::path data_root;
     fs::path workspace;
 };
 
-DataType port_type(const std::string& name) {
+DataType port_type(const std::string& name, bool realtime) {
+    if (realtime && name == "AudioStream") return DataType::AudioStream;
     if (name == "Audio") return DataType::Audio;
     if (name == "Number") return DataType::Number;
     if (name == "Text") return DataType::Text;
@@ -313,7 +316,7 @@ void expect_fields(const Json& object, std::initializer_list<const char*> fields
         if (std::find_if(fields.begin(),fields.end(),[&](const char* key){return it.key()==key;}) == fields.end())
             fail("plugin_manifest_invalid","Unknown field in plugin package document");
 }
-std::vector<PortDescriptor> parse_ports(const Json& value) {
+std::vector<PortDescriptor> parse_ports(const Json& value, bool realtime = false) {
     if (!value.is_array() || value.size() > 32) fail("plugin_descriptor_invalid","Invalid plugin ports");
     std::vector<PortDescriptor> ports;
     std::set<std::string> ids;
@@ -322,7 +325,7 @@ std::vector<PortDescriptor> parse_ports(const Json& value) {
         auto id=required_string(item,"id",64);
         if (!safe_id(id) || !ids.insert(id).second || !item.contains("required") || !item["required"].is_boolean())
             fail("plugin_descriptor_invalid","Duplicate or invalid plugin port");
-        ports.push_back({std::move(id),port_type(required_string(item,"type",32)),item["required"].get<bool>()});
+        ports.push_back({std::move(id),port_type(required_string(item,"type",32),realtime),item["required"].get<bool>()});
     }
     return ports;
 }
@@ -374,13 +377,31 @@ std::vector<ParameterDescriptor> parse_parameters(const Json& value) {
     return parameters;
 }
 
+std::set<std::string> parse_capabilities(const Json& value) {
+    if (!value.is_array() || value.empty() || value.size() > 2)
+        fail("plugin_manifest_invalid","Invalid plugin capability count");
+    std::set<std::string> result;
+    for (const auto& item : value) {
+        expect_fields(item,{"id","version"});
+        const auto id=required_string(item,"id",64);
+        if ((id != AG_WHOLE_SYNC_ID && id != AG_REALTIME_AUDIO_ID) ||
+            !item.contains("version") || !item["version"].is_number_integer() || item["version"] != 1 ||
+            !result.insert(id).second)
+            fail("plugin_manifest_invalid","Unknown or duplicate plugin capability");
+    }
+    return result;
+}
 NodeDescriptor parse_descriptor(const Json& item, const Package& package) {
     expect_fields(item,{"typeId","displayName","description","execution_domain","stream_role","realtime_role",
-        "inputs","outputs","parameters","plugin"});
-    if (required_string(item,"execution_domain",32) != "synchronous" ||
+        "inputs","outputs","parameters","plugin","realtime_capabilities"});
+    const auto domain=required_string(item,"execution_domain",32);
+    const bool realtime=domain == "realtime";
+    const std::string capability=realtime ? AG_REALTIME_AUDIO_ID : AG_WHOLE_SYNC_ID;
+    if ((domain != "synchronous" && !realtime) ||
         required_string(item,"stream_role",32) != "none" ||
-        required_string(item,"realtime_role",32) != "none")
-        fail("plugin_unsupported_domain","Only synchronous whole-value plugin nodes are supported");
+        required_string(item,"realtime_role",32) != (realtime ? "processor" : "none") ||
+        !package.capabilities.contains(capability))
+        fail("plugin_unsupported_domain","Plugin capability does not support this execution domain");
     const auto& origin=item.at("plugin");
     expect_fields(origin,{"id","implementation_version","capabilities","experimental","production_ready"});
     if (required_string(origin,"id") != package.plugin_id ||
@@ -388,7 +409,7 @@ NodeDescriptor parse_descriptor(const Json& item, const Package& package) {
         !origin.contains("experimental") || origin["experimental"] != true ||
         !origin.contains("production_ready") || origin["production_ready"] != false ||
         !origin.contains("capabilities") || !origin["capabilities"].is_array() || origin["capabilities"].size() != 1 ||
-        origin["capabilities"][0] != Json{{"id",AG_WHOLE_SYNC_ID},{"version",1}})
+        origin["capabilities"][0] != Json{{"id",capability},{"version",1}})
         fail("plugin_descriptor_invalid","Node plugin metadata differs from package manifest");
     NodeDescriptor descriptor{};
     descriptor.type_id=required_string(item,"typeId",128);
@@ -396,11 +417,32 @@ NodeDescriptor parse_descriptor(const Json& item, const Package& package) {
         fail("plugin_descriptor_invalid","Node type is outside its plugin namespace");
     descriptor.display_name=required_string(item,"displayName",256);
     descriptor.description=required_string(item,"description",2048);
-    descriptor.execution_domain=ExecutionDomain::Synchronous;
-    descriptor.inputs=parse_ports(item.at("inputs"));
-    descriptor.outputs=parse_ports(item.at("outputs"));
+    descriptor.execution_domain=realtime ? ExecutionDomain::Realtime : ExecutionDomain::Synchronous;
+    descriptor.inputs=parse_ports(item.at("inputs"),realtime);
+    descriptor.outputs=parse_ports(item.at("outputs"),realtime);
     descriptor.parameters=parse_parameters(item.at("parameters"));
-    descriptor.plugin=PluginOrigin{package.plugin_id,package.plugin_version,package.manifest_sha,0,1};
+    descriptor.plugin=PluginOrigin{package.plugin_id,package.plugin_version,package.manifest_sha,0,1,capability,1};
+    if (realtime) {
+        const auto valid_port=[](const auto& ports) {
+            return ports.size()==1 && ports[0].id=="audio" && ports[0].type==DataType::AudioStream && ports[0].required;
+        };
+        if (!valid_port(descriptor.inputs) || !valid_port(descriptor.outputs) || !item.contains("realtime_capabilities"))
+            fail("plugin_descriptor_invalid","Realtime processors require exactly one required audio stream input/output");
+        const auto& caps=item.at("realtime_capabilities");
+        expect_fields(caps,{"format","maximum_block_frames","supports_variable_blocks","offline_drivable"});
+        if (!caps.contains("format")) fail("plugin_descriptor_invalid","Missing realtime format");
+        expect_fields(caps["format"],{"sample_rate","channels","sample_type","layout"});
+        if (caps["format"] != Json{{"sample_rate",48000},{"channels",1},{"sample_type","float32"},{"layout","interleaved"}} ||
+            !caps.contains("maximum_block_frames") || !caps["maximum_block_frames"].is_number_integer() ||
+            caps["maximum_block_frames"] < 1 || caps["maximum_block_frames"] > 65536 ||
+            !caps.contains("supports_variable_blocks") || caps["supports_variable_blocks"] != true ||
+            !caps.contains("offline_drivable") || !caps["offline_drivable"].is_boolean())
+            fail("plugin_descriptor_invalid","Unsupported realtime capabilities");
+        descriptor.realtime_role=RealtimeRole::Processor;
+        descriptor.realtime_capabilities=RealtimeCapabilities{{48000,1},caps["maximum_block_frames"].get<std::uint32_t>(),true,caps["offline_drivable"].get<bool>()};
+    } else if (item.contains("realtime_capabilities")) {
+        fail("plugin_descriptor_invalid","Whole-value nodes cannot declare realtime capabilities");
+    }
     return descriptor;
 }
 
@@ -446,9 +488,9 @@ Package prepare_package(const Json& snapshot, const PluginHostOptions& options) 
         manifest.value("architecture",std::string{}) != "x86_64" || !manifest.contains("abi") ||
         manifest["abi"] != Json{{"major",0},{"minor",1}} || !manifest.contains("capabilities") ||
         !manifest.contains("experimental") || manifest["experimental"] != true ||
-        !manifest.contains("production_ready") || manifest["production_ready"] != false ||
-        manifest["capabilities"] != Json::array({Json{{"id",AG_WHOLE_SYNC_ID},{"version",1}}}))
+        !manifest.contains("production_ready") || manifest["production_ready"] != false)
         fail("plugin_manifest_invalid","Unsupported manifest schema, platform or ABI");
+    package.capabilities=parse_capabilities(manifest["capabilities"]);
     package.plugin_id=required_string(manifest,"plugin_id",128);
     package.plugin_version=required_string(manifest,"plugin_version",128);
     if (!safe_plugin_id(package.plugin_id) || !safe_id(package.plugin_version))
@@ -512,11 +554,15 @@ Package prepare_package(const Json& snapshot, const PluginHostOptions& options) 
         !catalog["nodes"].is_array() || catalog["nodes"].empty() || catalog["nodes"].size() > 64)
         fail("plugin_descriptor_invalid","Invalid static node catalog");
     std::set<std::string> ids;
+    std::set<std::string> used_capabilities;
     for (const auto& item : catalog["nodes"]) {
         auto descriptor=parse_descriptor(item,package);
+        used_capabilities.insert(descriptor.plugin->capability_id);
         if (!ids.insert(descriptor.type_id).second) fail("plugin_duplicate_type","Duplicate node type inside package");
         package.descriptors.push_back(std::move(descriptor));
     }
+    if (used_capabilities != package.capabilities)
+        fail("plugin_manifest_invalid","Package capabilities differ from node capability union");
     package.data_root=options.data_root / path_from_utf8(package.plugin_id);
     package.workspace=options.workspace;
     if (!local_absolute(options.data_root) || !local_absolute(options.workspace) ||
@@ -842,6 +888,84 @@ ag_status AG_CALL emit_value(void* user, ag_string id, const ag_value* value) no
     } catch (...) { if (user) static_cast<Staging*>(user)->rejected=AG_INTERNAL_ERROR; return AG_INTERNAL_ERROR; }
 }
 
+class RealtimePluginNode final : public IRealtimeProcessor {
+public:
+    RealtimePluginNode(std::shared_ptr<PackageRuntime> runtime, NodeDescriptor descriptor, ParameterMap parameters)
+        : runtime_(std::move(runtime)), descriptor_(std::move(descriptor)), parameters_(std::move(parameters)) {}
+    ~RealtimePluginNode() override { reset(); }
+    const NodeDescriptor& descriptor() const noexcept override { return descriptor_; }
+    void prepare(AudioFormat format, std::uint32_t maximum_frames) override {
+        reset();
+        if (format != descriptor_.realtime_capabilities->format || maximum_frames == 0 ||
+            maximum_frames > descriptor_.realtime_capabilities->maximum_block_frames)
+            fail("plugin_invalid_prepare","Realtime format or capacity differs from verified contract");
+        runtime_->ensure_loaded();
+        prepare_data_root(runtime_->package);
+        const std::string capability=AG_REALTIME_AUDIO_ID;
+        if (runtime_->api.get_node_api(borrow(descriptor_.type_id),borrow(capability),AG_REALTIME_AUDIO_VERSION,
+            sizeof(api_),&api_) != AG_OK || api_.struct_size < sizeof(api_) ||
+            api_.version != AG_REALTIME_AUDIO_VERSION || !api_.create || !api_.prepare || !api_.process || !api_.destroy)
+            fail("plugin_abi_invalid","Realtime function table differs from verified contract");
+        const auto owned=prepare_parameters(descriptor_,parameters_);
+        std::vector<ag_named_value> wires;
+        wires.reserve(owned.size());
+        for (const auto& field : owned) wires.push_back(field.wire);
+        const auto resource=utf8_path(runtime_->package.root);
+        const auto data=utf8_path(runtime_->package.data_root);
+        ag_instance_environment environment{sizeof(environment),0,borrow(resource),borrow(data)};
+        ag_create_info info{sizeof(info),0,wires.data(),static_cast<std::uint32_t>(wires.size()),0,&environment};
+        HostError error{};
+        ag_error_sink sink{sizeof(sink),0,&error,capture_error};
+        try {
+            const auto status=api_.create(&info,&sink,&instance_);
+            if (status != AG_OK) {
+                if (instance_) {
+                    instance_=nullptr; // failed create did not transfer ownership
+                    fail("plugin_abi_invalid","Failed plugin create returned a non-null instance");
+                }
+                status_failure(status,error,descriptor_);
+            }
+            if (!instance_) fail("plugin_abi_invalid","Successful plugin create returned a null instance");
+            ag_realtime_prepare_info prepared{sizeof(prepared),0,format.sample_rate,format.channel_count,maximum_frames,0};
+            const auto prepare_status=api_.prepare(instance_,&prepared,&sink);
+            if (prepare_status != AG_OK) status_failure(prepare_status,error,descriptor_);
+            maximum_frames_=maximum_frames;
+        } catch (...) {
+            reset();
+            throw;
+        }
+    }
+    RealtimeProcessStatus process(std::span<float> samples) noexcept override {
+        if (!instance_ || !maximum_frames_) return RealtimeProcessStatus::NotPrepared;
+        if (samples.empty() || samples.size()>maximum_frames_) return RealtimeProcessStatus::InvalidBlock;
+        ag_realtime_block block{sizeof(block),0,samples.size(),samples.size(),samples.data()};
+        try {
+            const auto status=api_.process(instance_,&block);
+            switch (status) {
+            case AG_RT_OK: return RealtimeProcessStatus::Ok;
+            case AG_RT_NOT_PREPARED: return RealtimeProcessStatus::NotPrepared;
+            case AG_RT_INVALID_BLOCK: return RealtimeProcessStatus::InvalidBlock;
+            case AG_RT_NON_FINITE_INPUT: return RealtimeProcessStatus::NonFiniteInput;
+            case AG_RT_NON_FINITE_OUTPUT: return RealtimeProcessStatus::NonFiniteOutput;
+            default: return RealtimeProcessStatus::NodeFailed;
+            }
+        } catch (...) { return RealtimeProcessStatus::NodeFailed; }
+    }
+private:
+    void reset() noexcept {
+        maximum_frames_=0;
+        if (auto* instance=std::exchange(instance_,nullptr)) {
+            try { api_.destroy(instance); } catch (...) {}
+        }
+    }
+    std::shared_ptr<PackageRuntime> runtime_;
+    NodeDescriptor descriptor_;
+    ParameterMap parameters_;
+    ag_realtime_audio_api api_{};
+    ag_instance* instance_{};
+    std::uint32_t maximum_frames_{};
+};
+
 class PluginNode final : public ISyncNode {
 public:
     PluginNode(std::shared_ptr<PackageRuntime> runtime, NodeDescriptor descriptor, const ParameterMap& parameters)
@@ -970,9 +1094,15 @@ std::string register_plugin_nodes(NodeRegistry& registry, const PluginHostOption
             }
             auto runtime=std::make_shared<PackageRuntime>(std::move(package));
             for (const auto& descriptor : runtime->package.descriptors) {
-                candidate.register_type(descriptor,[runtime,descriptor](const ParameterMap& parameters) {
-                    return std::make_unique<PluginNode>(runtime,descriptor,parameters);
-                });
+                if (descriptor.execution_domain == ExecutionDomain::Realtime) {
+                    candidate.register_realtime_type(descriptor,[runtime,descriptor](const ParameterMap& parameters) {
+                        return std::make_unique<RealtimePluginNode>(runtime,descriptor,parameters);
+                    });
+                } else {
+                    candidate.register_type(descriptor,[runtime,descriptor](const ParameterMap& parameters) {
+                        return std::make_unique<PluginNode>(runtime,descriptor,parameters);
+                    });
+                }
             }
             if (node_catalog_json(candidate).size() > catalog_limit)
                 fail("plugin_catalog_limit","Complete node catalog would exceed 32 KiB; package not registered");

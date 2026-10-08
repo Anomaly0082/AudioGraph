@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const nodeModules = fileURLToPath(new URL("../node_modules", import.meta.url));
 const testFiles = [
+  "tests/session-state.test.mjs",
   "tests/model.test.mjs",
   "tests/ai-model.test.mjs",
   "tests/workflow-model.test.mjs",
@@ -23,7 +24,9 @@ const testFiles = [
   "tests/conversation.test.mjs",
   "tests/plugin-manager.test.mjs",
   "tests/workflow-editor.test.mjs",
+  "tests/editor-source.test.mjs",
   "tests/workspace-browser.test.mjs",
+  "tests/recent-workspaces.test.mjs",
 ];
 const result = spawnSync(process.execPath, ["--test", ...testFiles], {
   cwd: fileURLToPath(new URL("../", import.meta.url)),

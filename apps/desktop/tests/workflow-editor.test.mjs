@@ -140,6 +140,7 @@ function render(editorOverrides = {}, propsOverrides = {}) {
     setPath: noop,
     load: noop,
     save: noop,
+    saveAs: noop,
     resetBlank: noop,
     validate: noop,
     run: noop,
@@ -161,7 +162,8 @@ test("Workflow page exposes explicit JSON file controls and requires validation 
   const html = render();
   assert.match(html, /Workflow 相对文件路径/);
   assert.match(html, /Workflow 文件工作区/);
-  assert.match(html, /另存为新文件/);
+  assert.match(html, /<button[^>]*>保存<\/button>/);
+  assert.match(html, /<button[^>]*>另存为<\/button>/);
   assert.match(html, /内部 Graph 在 AI 工作区运行/);
   assert.match(html, /<textarea[^>]*aria-label="Workflow JSON"/);
   assert.match(
