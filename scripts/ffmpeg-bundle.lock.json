@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "provider": "BtbN/FFmpeg-Builds",
+  "release": "autobuild-2026-10-22-13-06",
+  "builder_commit": "937868360a21d711ec94a33f5591d345ad9b7754",
+  "ffmpeg_revision": "5c4f5744cd60943125a78db692b728210102f255",
+  "variant": "win64-lgpl-shared-8.1",
+  "binary": {
+    "asset_id": 665911097,
+    "bytes": 80993894,
+    "name": "ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip",
+    "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-22-13-06/ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip",
+    "sha256": "c41df73a3f3259e81d5d53e6ce0c4c80b4841a30894fb77954650e445daa6c53"
+  },
+  "ffmpeg_source": {
+    "name": "FFmpeg-5c4f5744cd60943125a78db692b728210102f255.zip",
+    "url": "https://codeload.github.com/FFmpeg/FFmpeg/zip/5c4f5744cd60943125a78db692b728210102f255",
+    "sha256": "c6978fa52d470ff3e3e5e96b54f51155580b61fffc32447304189719b281b522"
+  },
+  "builder_source": {
+    "name": "FFmpeg-Builds-937868360a21d711ec94a33f5591d345ad9b7754.zip",
+    "url": "https://codeload.github.com/BtbN/FFmpeg-Builds/zip/937868360a21d711ec94a33f5591d345ad9b7754",
+    "sha256": "3d782f1b71b4f6cef89c9e0014176542d071b1dfbf5de41b9f96aac6a442b1af"
+  },
+  "dependency_sources": {
+    "workflow_run": 39776938430,
+    "artifact_id": 12424698518,
+    "name": "download-cache.zip",
+    "bytes": 2210375345,
+    "sha256": "f89c6c43969d92c8b95cb459a90fbafbc743d3d3cc4d16c610317f9ceef922f8",
+    "api_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/actions/artifacts/12424698518/zip",
+    "expires_at": "2026-11-05T12:16:05Z"
+  },
+  "status": "runtime verified as LGPL-3.0-or-later/shared; matching dependency sources and notice review incomplete; local development only"
+}

@@ -25,9 +25,19 @@ export async function invokeDesktop(command, args) {
   window.calls.push({command, args});
   if(command === 'workspace_browser_list') {
     const entries = window.entries.filter(e => e.path.split('/').slice(0,-1).join('/') === args.path);
-    return {space:args.space,path:args.path,entries,offset:0,next_offset:null,total:entries.length,partial:false,warnings:[]};
+    return {space:args.space,path:args.path,entries,offset:0,next_offset:null,total:entries.length,partial:false,warnings:[],fixtureSessionId:args.sessionId};
   }
   if(command === 'workspace_browser_text') return {space:args.space,path:args.path,text:'preview',bytes:7,truncated:false};
+  if(command === 'workspace_audio_convert') {
+    if(!['wav','flac','mp3','m4a'].includes(args.outputFormat) || !args.outputPath.endsWith('.'+args.outputFormat)) throw Error('格式和扩展名不一致');
+    if(window.delayConversion) { window.delayConversion=false; await new Promise(resolve=>window.finishConversion=resolve); }
+    if(window.cancelledConversion===args.requestId) throw Error('转换已取消。');
+    if(window.failEncoding) { window.failEncoding=false; throw Error('编码器不支持源采样率；未转换或修改源文件。'); }
+    if(window.entries.some(e=>e.path===args.outputPath)) throw Error('输出文件已存在，不会覆盖。');
+    window.entries.push({name:args.outputPath.split('/').pop(),path:args.outputPath,kind:'file',bytes:9,modified_at_ms:null});
+    return {path:args.outputPath};
+  }
+  if(command === 'workspace_audio_convert_cancel') { window.cancelledConversion=args.requestId; window.finishConversion?.(); return {}; }
   if(command === 'workspace_files_mutate') {
     if(window.delayNext) { window.delayNext=false; await new Promise(resolve => window.resolveMutation=resolve); }
     if(window.failNext) { window.failNext=false; throw Error('模拟目标写入失败'); }
@@ -59,7 +69,8 @@ function Fixture(){
  window.setBrowserVisible=setVisible;
  const browser=useWorkspaceBrowser(connection,visible,{enabled:true,protectedPaths:()=>window.protected,blockedReason:()=>window.blocked ?? null});
  window.browserState=browser;
- window.changeWorkspace=()=>setConnection({sessionId:'b',workspace:'C:/b'});
+ window.connectionSessionId=connection.sessionId;
+ window.changeWorkspace=()=>setConnection(current=>current.sessionId==='a'?{sessionId:'b',workspace:'C:/b'}:{sessionId:'c',workspace:'C:/c'});
  return visible ? <WorkspaceBrowserPage browser={browser} connected onOpenGraph={()=>{}} onOpenWorkflow={()=>{}}/> : <div>其他页面</div>;
 }
 createRoot(document.getElementById('root')).render(<Fixture/>);
@@ -206,10 +217,94 @@ try {
   assert.match(await page.getByRole('alert').innerText(),/任务正在运行/);
   await row('file4.txt').click();await row('file4.txt').press('Delete');
   assert.equal(await count(),before);
+  await context('clip.wav','格式转换');
+  assert.equal(await page.getByRole('dialog').count(),0,'task ownership blocks conversion as well');
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').length),0);
   await page.evaluate(()=>{window.blocked=null;window.protected=[];});
   // File selection previews text, audio selection never starts playback.
   await row('clip.wav').click();
+  const loadAudioBounds=await page.getByRole('button',{name:'加载音频',exact:true}).boundingBox();
+  const convertAudioBounds=await page.getByRole('button',{name:'格式转换',exact:true}).boundingBox();
+  assert.ok(convertAudioBounds.x-(loadAudioBounds.x+loadAudioBounds.width)>=10,'audio preview actions need at least 10px horizontal spacing');
   assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_browser_audio').length),0);
+  // Conversion is independent of the 32 MiB playback limit, scoped, cancellable and never overwrites.
+  await page.evaluate(()=>{const source=window.entries.find(e=>e.path==='clip.wav');source.bytes=48*1024*1024;});
+  await page.getByRole('button',{name:'刷新',exact:true}).click();
+  await row('clip.wav').click();
+  assert.equal(await page.getByRole('button',{name:'加载音频',exact:true}).isDisabled(),true);
+  await page.getByRole('button',{name:'格式转换',exact:true}).click();
+  let conversionInput=page.getByRole('textbox',{name:'新输出文件名'});
+  assert.equal(await conversionInput.inputValue(),'clip_converted.wav');
+  const formats=page.getByRole('combobox',{name:'输出格式',exact:true});
+  assert.equal(await formats.inputValue(),'wav');
+  await formats.selectOption('flac');assert.equal(await conversionInput.inputValue(),'clip_converted.flac');
+  await conversionInput.fill('my.custom.flac');
+  await formats.selectOption('mp3');assert.equal(await conversionInput.inputValue(),'my.custom.mp3');
+  assert.equal(await page.getByText('MP3/M4A 为有损编码。',{exact:true}).count(),1);
+  await formats.selectOption('m4a');assert.equal(await conversionInput.inputValue(),'my.custom.m4a');
+  await formats.selectOption('wav');assert.equal(await conversionInput.inputValue(),'my.custom.wav');
+  assert.equal(await page.getByText('MP3/M4A 为有损编码。',{exact:true}).count(),0);
+  await conversionInput.fill('../escape.wav');
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').length),0);
+  await cancel();
+  await context('clip.wav','格式转换');
+  await page.getByRole('combobox',{name:'输出格式',exact:true}).selectOption('mp3');
+  await page.evaluate(()=>window.delayConversion=true);
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();
+  await page.getByRole('dialog').locator('form').dispatchEvent('submit');
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').length),1);
+  assert.equal(await page.evaluate(()=>window.browserState.readMutating()),true);
+  const conversionRequest=await page.evaluate(()=>window.calls.find(c=>c.command==='workspace_audio_convert').args);
+  assert.equal(conversionRequest.path,'clip.wav');assert.equal(conversionRequest.outputPath,'clip_converted.mp3');assert.equal(conversionRequest.outputFormat,'mp3');assert.equal(conversionRequest.space,'user');assert(conversionRequest.requestId.length>=16);
+  await page.screenshot({path:path.join(output,'audio-conversion.png')});
+  await page.getByRole('dialog').press('Escape');
+  assert.equal(await page.getByRole('dialog').count(),1,'active conversion cannot be dismissed');
+  await page.evaluate(()=>window.setBrowserVisible(false));await page.getByText('其他页面').waitFor();
+  assert.equal(await page.evaluate(()=>window.browserState.readMutating()),true,'conversion lease survives navigation');
+  await page.evaluate(()=>window.setBrowserVisible(true));await page.getByRole('dialog').waitFor();
+  assert.equal(await page.getByRole('combobox',{name:'输出格式',exact:true}).inputValue(),'mp3','running format persists through route changes');
+  assert.equal(await page.getByRole('textbox',{name:'新输出文件名'}).inputValue(),'clip_converted.mp3');
+  await page.getByRole('dialog').getByRole('button',{name:'取消',exact:true}).click();await waitDone();
+  const cancelled=await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert_cancel'));
+  assert.deepEqual(cancelled.map(c=>c.args),[{sessionId:'a',requestId:conversionRequest.requestId}]);
+  assert.match(await page.getByRole('dialog').getByRole('alert').innerText(),/取消/);
+  assert.equal(await page.evaluate(()=>window.entries.some(e=>e.path==='clip_converted.mp3')),false);
+  await page.getByRole('combobox',{name:'输出格式',exact:true}).selectOption('wav');
+  await page.getByRole('textbox',{name:'新输出文件名'}).fill('clip_pcm.wav');
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();await waitDone();
+  await row('clip_pcm.wav').waitFor();
+  assert.equal(await page.evaluate(()=>window.browserState.activeEntry.path),'clip_pcm.wav');
+  const conversionIds=await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').map(c=>c.args.requestId));
+  assert.equal(new Set(conversionIds).size,conversionIds.length,'each conversion gets a distinct cancellation nonce');
+  assert.equal(await page.evaluate(()=>window.entries.some(e=>e.path==='clip.wav')),true);
+  assert.equal(await page.locator('.banner:not(.error)').count(),0);
+  await context('clip.wav','格式转换');await page.getByRole('textbox',{name:'新输出文件名'}).fill('clip_pcm.wav');
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();await waitDone();
+  assert.match(await page.getByRole('dialog').getByRole('alert').innerText(),/已存在/);
+  await cancel();
+  for(const format of ['flac','mp3','m4a']) {
+    await context('clip.wav','格式转换');
+    await page.getByRole('combobox',{name:'输出格式',exact:true}).selectOption(format);
+    await page.getByRole('textbox',{name:'新输出文件名'}).fill('custom_'+format+'.wav');
+    const beforeMismatch=await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').length);
+    await page.getByRole('button',{name:'开始转换',exact:true}).click();
+    assert.match(await page.getByRole('dialog').getByRole('alert').innerText(),/所选格式一致/);
+    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').length),beforeMismatch);
+    await page.getByRole('textbox',{name:'新输出文件名'}).fill('custom_'+format+'.'+format);
+    await page.getByRole('button',{name:'开始转换',exact:true}).click();await waitDone();
+    await row('custom_'+format+'.'+format).waitFor();
+    const request=await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').at(-1).args);
+    assert.equal(request.outputFormat,format);assert.equal(request.outputPath,'custom_'+format+'.'+format);
+  }
+  await context('clip.wav','格式转换');await page.getByRole('combobox',{name:'输出格式',exact:true}).selectOption('m4a');
+  await page.screenshot({path:path.join(output,'audio-conversion-m4a.png')});
+  await page.evaluate(()=>window.failEncoding=true);
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();await waitDone();
+  assert.match(await page.getByRole('dialog').getByRole('alert').innerText(),/不支持源采样率/);
+  assert.equal(await page.evaluate(()=>window.entries.some(e=>e.path==='clip_converted.m4a')),false);
+  assert.equal(await page.evaluate(()=>window.entries.some(e=>e.path==='clip.wav')),true);
+  await cancel();
   // Native external imports pass an opaque token only.
   await tree.click({position:{x:3,y:230}});
   before=await count();
@@ -229,6 +324,9 @@ try {
   await page.getByRole('combobox',{name:'文件工作区'}).selectOption('ai');
   assert.equal(await page.evaluate(()=>window.browserState.clipboard),null);
   assert.deepEqual(await page.evaluate(()=>window.browserState.branches),{});
+  await context('clip.wav','格式转换');await page.getByRole('textbox',{name:'新输出文件名'}).fill('clip_ai.wav');
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();await waitDone();
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').at(-1).args.space),'ai');
   await page.getByRole('combobox',{name:'文件工作区'}).selectOption('user');
   await row('file2.txt').click();await row('file2.txt').press('Control+c');
   await row('file2.txt').press('F2');before=await count();
@@ -257,6 +355,20 @@ try {
   await page.screenshot({path:path.join(output,'last-row-menu.png')});
   await menu.press('Escape');
   assert.equal(await menu.count(),0);
+  await context('clip.wav','格式转换');await page.getByRole('textbox',{name:'新输出文件名'}).fill('stale_scope.wav');
+  await page.evaluate(()=>window.delayConversion=true);
+  await page.getByRole('button',{name:'开始转换',exact:true}).click();
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_audio_convert').at(-1).args.sessionId),'b');
+  await page.evaluate(()=>window.changeWorkspace());
+  // A React state update can leave the prior rendered listing visible until
+  // commit. Wait for the actual new session's read, not merely any loaded list.
+  await page.waitForFunction(()=>window.connectionSessionId==='c' && window.browserState.listing?.fixtureSessionId==='c' && !window.browserState.loading);
+  const newSessionReads=await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_browser_list' && c.args.sessionId==='c').length);
+  await page.evaluate(()=>window.finishConversion());await waitDone();
+  await page.getByRole('dialog').waitFor({state:'detached'});
+  assert.equal(await page.getByRole('dialog').count(),0);
+  assert.equal(await page.evaluate(()=>window.browserState.listing.entries.some(e=>e.path==='stale_scope.wav')),false,'old conversion completion does not refresh a different session');
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.command==='workspace_browser_list' && c.args.sessionId==='c').length),newSessionReads,'old completion issues no new-session list request');
   assert.deepEqual(errors,[]);
-  console.log('Workspace explorer headless interactions passed: quiet root/success UI, direct context/Delete recycle with repeat/failure/retry guards, tree, inline name/IME/blur/double Enter, copy/cut/paste, dirty/task/space/session guards, confirmed token import. Screenshots: '+output);
+  console.log('Workspace explorer headless interactions passed: WAV/FLAC/MP3/M4A conversion, extension/encoder errors, route-preserved format, precise cancellation/stale-session/no-overwrite/large-source guards, tree/editing/task/import guards. Screenshots: '+output);
 } finally {await browser.close();}

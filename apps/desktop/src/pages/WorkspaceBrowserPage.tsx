@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import DirectoryBrowser from "../components/WorkspaceFileTree";
 import type { WorkspaceBrowser } from "../hooks/useWorkspaceBrowser";
 import {
@@ -6,6 +6,9 @@ import {
   browserConfigurationKind,
   browserFileKind,
   formatBrowserBytes,
+  audioOutputFormats,
+  replaceConvertedAudioExtension,
+  type AudioOutputFormat,
 } from "../workspace-browser-model";
 
 export type WorkspaceBrowserPageProps = {
@@ -50,6 +53,7 @@ function FilePreview({
           <p className="hint">
             音频按本地文件快照加载，上限 32 MiB；加载后点击播放器播放。
           </p>
+          <div className="action-row audio-preview-actions">
           <button
             disabled={
               browser.audioLoading ||
@@ -60,6 +64,8 @@ function FilePreview({
           >
             {browser.audioLoading ? "加载音频中…" : "加载音频"}
           </button>
+          <button disabled={!browser.filesEnabled || browser.mutating} onClick={() => browser.beginConversion(entry)}>格式转换</button>
+          </div>
           {entry.bytes !== null && entry.bytes > AUDIO_PREVIEW_LIMIT && (
             <p className="hint">文件超过 32 MiB，无法在此加载。</p>
           )}
@@ -143,8 +149,39 @@ export default function WorkspaceBrowserPage(props: WorkspaceBrowserPageProps) {
         />
       </div>
       {props.browser.mutationDialog?.operation === "import" && <FileMutationDialog key={props.browser.mutationDialog.dropToken} browser={props.browser} />}
+      {props.browser.conversionDialog && <AudioConversionDialog key={`${props.browser.conversionDialog.identity}:${props.browser.conversionDialog.space}:${props.browser.conversionDialog.source.path}`} browser={props.browser} />}
     </div>
   );
+}
+
+function AudioConversionDialog({ browser }: { browser: WorkspaceBrowser }) {
+  const conversion = browser.conversionDialog!;
+  const [name, setName] = useState(conversion.outputName);
+  const [outputFormat, setOutputFormat] = useState<AudioOutputFormat>(conversion.outputFormat);
+  const modal = useRef<HTMLDialogElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const composing = useRef(false);
+  const running = !!browser.conversionState;
+  const cancelling = browser.conversionState?.phase === "cancelling";
+  useEffect(() => {
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    modal.current?.showModal(); input.current?.focus(); input.current?.select();
+    return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
+  }, []);
+  return <dialog ref={modal} className="workspace-file-dialog" aria-labelledby="audio-conversion-title" onCancel={event => { event.preventDefault(); if (!running) void browser.cancelConversion(); }}>
+    <form onSubmit={event => { event.preventDefault(); if (!composing.current) void browser.submitConversion(name, outputFormat); }}>
+      <h2 id="audio-conversion-title">格式转换</h2>
+      <p>{conversion.space === "user" ? "用户工作区" : "AI 工作区"} · <code>{conversion.source.path}</code></p>
+      <label>输出格式<select aria-label="输出格式" value={outputFormat} disabled={running} onChange={event => { const format = event.target.value as AudioOutputFormat; setOutputFormat(format); setName(current => replaceConvertedAudioExtension(current, format)); }}>{audioOutputFormats.map(format => <option key={format} value={format}>{format === "m4a" ? "M4A (AAC)" : format.toUpperCase()}</option>)}</select></label>
+      <label>新输出文件名<input ref={input} aria-label="新输出文件名" value={name} disabled={running} required autoComplete="off" onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onChange={event => setName(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (composing.current || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }} /></label>
+      <p className="hint">保留采样率和声道。源文件保留，输出到同一目录，不覆盖已有文件。</p>
+      {(outputFormat === "mp3" || outputFormat === "m4a") && <p className="hint">MP3/M4A 为有损编码。</p>}
+      {running && <p role="status">{cancelling ? "正在取消转换…" : "正在转换…"}</p>}
+      {browser.error && <p className="banner error" role="alert">{browser.error}</p>}
+      <div className="action-row"><button type="button" disabled={cancelling} onClick={() => void browser.cancelConversion()}>{cancelling ? "正在取消…" : "取消"}</button><button type="submit" disabled={running}>开始转换</button></div>
+    </form>
+  </dialog>;
 }
 
 function FileMutationDialog({ browser }: { browser: WorkspaceBrowser }) {

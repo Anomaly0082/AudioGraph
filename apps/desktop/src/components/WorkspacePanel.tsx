@@ -37,7 +37,7 @@ export default function WorkspacePanel({
       <div className="input-row">
         <input
           id="workspace-path"
-          value={session.workspace}
+          value={workspaceDisplayPath(session.workspace)}
           disabled={!!session.connection || locked}
           onChange={(event) => session.setWorkspace(event.target.value)}
           placeholder="选择一个已有的音频目录"

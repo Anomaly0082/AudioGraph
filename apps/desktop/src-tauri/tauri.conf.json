@@ -25,6 +25,9 @@
   },
   "bundle": {
     "active": false,
+    "resources": {
+      "resources/ffmpeg/": "ffmpeg/"
+    },
     "externalBin": [
       "binaries/control-cli"
     ]

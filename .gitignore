@@ -11,6 +11,8 @@
 .env.*
 !.env.example
 /apps/desktop/src-tauri/binaries/*.exe
+/apps/desktop/src-tauri/resources/ffmpeg/
+/apps/desktop/src-tauri/resources/ffmpeg.previous-*/
 *.pdb
 *.ilk
 *.user

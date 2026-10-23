@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, ClipboardPaste, FolderPlus, LoaderCircle, RefreshCw } from "lucide-react";
 import WorkspaceEntryIcon from "./WorkspaceEntryIcon";
 import type { WorkspaceBrowser } from "../hooks/useWorkspaceBrowser";
-import { browserBreadcrumbs, formatBrowserBytes, parentBrowserPath, type BrowserEntry, type BrowserSpace } from "../workspace-browser-model";
+import { browserBreadcrumbs, browserFileKind, formatBrowserBytes, parentBrowserPath, type BrowserEntry, type BrowserSpace } from "../workspace-browser-model";
 
 // Delay only the visual indicator, never the request or its result. Fast reads
 // do not flash a temporary row; unmounting cancels the pending indicator.
@@ -105,6 +105,7 @@ export default function WorkspaceFileTree({ browser: b, connected }: { browser: 
       <button role="menuitem" disabled={disabled} onClick={() => action(() => { if (menu.entry?.kind === "directory" && !b.branches[menu.entry.path]?.expanded) void b.toggleDirectory(menu.entry); b.beginMutation("mkdir"); })}>新建文件夹</button>
       {menu.entry && <><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.copyEntry(menu.entry!))}>复制 <kbd>Ctrl+C</kbd></button><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.copyEntry(menu.entry!, true))}>剪切 <kbd>Ctrl+X</kbd></button></>}
       <button role="menuitem" disabled={disabled || !b.clipboard} onClick={() => action(() => void b.paste())}>粘贴 <kbd>Ctrl+V</kbd></button>
+      {menu.entry && browserFileKind(menu.entry) === "audio" && <button role="menuitem" disabled={disabled} onClick={() => action(() => b.beginConversion(menu.entry!))}>格式转换</button>}
       {menu.entry && <><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.beginMutation("rename", menu.entry!))}>重命名 <kbd>F2</kbd></button><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.beginMutation("trash", menu.entry!))}>移到回收站 <kbd>Delete</kbd></button></>}
     </div>, document.body)}
   </section>;

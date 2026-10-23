@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "inputs": { "source": "input.m4a", "output": "converted.wav" },
+  "steps": [
+    {
+      "id": "convert", "type": "call", "tool": "audio_convert",
+      "args": {
+        "source_space": "user",
+        "source_path": { "$ref": "/inputs/source" },
+        "path": { "$ref": "/inputs/output" }
+      }
+    },
+    {
+      "id": "inspect", "type": "call", "tool": "audio_inspect",
+      "args": { "space": "ai", "path": { "$ref": "/steps/convert/path" } }
+    }
+  ],
+  "outputs": {
+    "audio": { "$ref": "/steps/convert" },
+    "metadata": { "$ref": "/steps/inspect" }
+  }
+}

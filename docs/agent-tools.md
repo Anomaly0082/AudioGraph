@@ -20,7 +20,9 @@ Graph模式只提供查询、配置编辑和校验工具，模型没有执行工
 
 工具参数使用`space: user | ai`与相对路径，不接受磁盘绝对路径、父路径、设备路径、符号链接、junction或硬链接绕过。Graph校验明确指定空间：Graph助手一般为用户空间编辑配置并用`space=user`校验，用户载入编辑器后手动运行。模型调用`graph_run`则仅在AI工作区，文件输入先通过复制工具导入，输出保留在AI空间，需要交付时显式调用导出工具。运行使用现有control-cli独立实例，不改变用户手动运行的会话或C++ Node/Executor契约。
 
-统一工具表：`workspace_list`、`directory_create`（仅AI空间）、`file_read_text`、`file_write_text`（仅AI空间）、`file_delete`（仅AI空间）、`file_copy_to_ai`、`file_export`（AI到用户，仅新建）、`audio_inspect`、`nodes_list`、`graph_validate`，以及仅Workflow模式可用的`graph_run`、`workflow_validate`、`workflow_run`。Workflow文件只能调用前述基础工具，不能递归调用Workflow工具。
+统一工具表：`workspace_list`、`directory_create`（仅AI空间）、`file_read_text`、`file_write_text`（仅AI空间）、`file_delete`（仅AI空间）、`file_copy_to_ai`、`file_export`（AI到用户，仅新建）、`audio_inspect`、`nodes_list`、`graph_validate`，以及仅Workflow模式可用的`audio_convert`、`graph_run`、`workflow_validate`、`workflow_run`。Workflow文件可调用`audio_convert`及其他基础工具，不能递归调用Workflow工具。
+
+`audio_convert({source_space:"user",source_path:"input.m4a",path:"converted.wav",output_format:"wav"})`将普通本地音频转为AI空间中的新文件。`output_format`可选`wav`（默认PCM16）、`flac`、`mp3`、`m4a`，扩展名必须匹配；MP3/M4A为有损编码。无需先复制源文件；不改源、不覆盖目标，目标父目录须已存在，AI目录深度不超过3层。默认保留采样率和单/双声道，编码器不支持时失败；可显式指定整数`sample_rate`及`channels:1|2`，不会静默混音或重采样。返回`space/path/output_format/encoding/sample_rate/channels/frames/duration_seconds/bytes`等元数据，压缩输出`frames:null`而非估计PCM帧数。现有Graph和`audio_inspect`仍需PCM16 WAV，其他格式用于交付，交付仍用`file_export`。输入512 MiB、输出256 MiB、AI总配额512 MiB和120秒/Workflow剩余期限限制不变。取消和失败不发布半成品。详见[文件格式转换](audio-format.md#文件格式转换界面与内置ai共用)。
 
 Workflow另提供纯数据步骤`compute`（add/sub/mul/div/abs）、`concat`（0..64个字符串/数字拼接）、`filter`（按条件保留完整项）和`select`（按有限数值取最小/最大项，保留参数与文件路径）。筛选输入最多16项，空选择found=false，并列取首项；条件/by中的item/index为临时作用域，不泄漏到外层。它们不是新的外层AI工具，不扩大文件/设备权限；AI通过编写Workflow文件使用，并以`/steps/id`读取结果。系统提示和workflow_validate说明提供准确格式、数值/类型/容量限制及先检查found再导出的规则，具体规则与示例见[Workflow v1](workflow-v1.md)。不支持把字符串当作算术、模板或Python执行，也不自动评价听感或运行无限搜索。
 

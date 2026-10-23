@@ -17,6 +17,8 @@ import {
   browserRelativePath,
   browserMutationTarget,
   browserEntryName,
+  convertedAudioOutputPath,
+  defaultConvertedAudioName,
   browserPathContains,
   matchesBrowserSnapshot,
   parentBrowserPath,
@@ -26,6 +28,7 @@ import {
   type BrowserSpace,
   type BrowserTextPreview,
   type BrowserMutationOperation,
+  type AudioOutputFormat,
 } from "../workspace-browser-model";
 
 export function useWorkspaceBrowser(
@@ -56,6 +59,12 @@ export function useWorkspaceBrowser(
   const [mutationDialog, setMutationDialog] = useState<MutationDialog | null>(null);
   const mutationDialogRef = useRef<MutationDialog | null>(null);
   function showMutation(value: MutationDialog | null) { mutationDialogRef.current = value; setMutationDialog(value); }
+  type ConversionDialog = { source: BrowserEntry; sessionId: string; identity: string; space: BrowserSpace; root: string; outputName: string; outputFormat: AudioOutputFormat };
+  const [conversionDialog, setConversionDialog] = useState<ConversionDialog | null>(null);
+  const conversionDialogRef = useRef<ConversionDialog | null>(null);
+  function showConversion(value: ConversionDialog | null) { conversionDialogRef.current = value; setConversionDialog(value); }
+  const [conversionState, setConversionState] = useState<{ requestId: string; phase: "running" | "cancelling" } | null>(null);
+  const conversionRequest = useRef<{ requestId: string; sessionId: string; identity: string; cancelPending: boolean } | null>(null);
   const [space, setSpaceState] = useState<BrowserSpace>("user");
   const [path, setPath] = useState("");
   const [listing, setListing] = useState<BrowserListing | null>(null);
@@ -165,6 +174,7 @@ export function useWorkspaceBrowser(
     setLoading(false);
     setError("");
   }, [identity]);
+  useLayoutEffect(() => { if (!conversionRequest.current) showConversion(null); }, [identity, visible, space, path]);
   useLayoutEffect(() => {
     if (!visible) {
       resetTree();
@@ -423,6 +433,62 @@ export function useWorkspaceBrowser(
   function isCurrentPreview(expected: BrowserSnapshot | null) {
     return !!previewRef.current && current(expected);
   }
+  function beginConversion(entry: BrowserEntry) {
+    const session = currentConnection.current;
+    if (!enabled || !session || !visibleRef.current || mutatingRef.current || browserFileKind(entry) !== "audio") return;
+    const blocked = optionsRef.current.blockedReason?.();
+    if (blocked) { setError(blocked); return; }
+    setError("");
+    showMutation(null);
+    showConversion({ source: entry, sessionId: session.sessionId, identity: scopeRef.current.identity, space: spaceRef.current, root: pathRef.current, outputName: defaultConvertedAudioName(entry.path), outputFormat: "wav" });
+  }
+  async function submitConversion(name: string, outputFormat: AudioOutputFormat = "wav") {
+    const dialog = conversionDialogRef.current;
+    if (!dialog || !enabled || !visibleRef.current || mutatingRef.current || dialog.identity !== scopeRef.current.identity || dialog.space !== spaceRef.current || dialog.root !== pathRef.current) return;
+    let request: { requestId: string; sessionId: string; identity: string; cancelPending: boolean } | null = null;
+    const scope = scopeRef.current;
+    const valid = () => mounted.current && scope === scopeRef.current && dialog.space === spaceRef.current && dialog.root === pathRef.current;
+    try {
+      const blocked = optionsRef.current.blockedReason?.();
+      if (blocked) throw new Error(blocked);
+      const outputPath = convertedAudioOutputPath(dialog.source.path, name, outputFormat);
+      showConversion({ ...dialog, outputName: name, outputFormat });
+      const requestId = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
+      request = { requestId, sessionId: dialog.sessionId, identity: dialog.identity, cancelPending: false };
+      conversionRequest.current = request;
+      mutatingRef.current = true;
+      setMutating(true);
+      setConversionState({ requestId: request.requestId, phase: "running" });
+      setError("");
+      clearAudio();
+      const reply = await invokeDesktop<{ path?: string; cancelled?: boolean }>("workspace_audio_convert", { sessionId: dialog.sessionId, space: dialog.space, path: dialog.source.path, outputPath, outputFormat, requestId: request.requestId });
+      if (!valid()) return;
+      if (reply.cancelled) throw new Error("转换已取消。");
+      if (!reply.path) throw new Error("音频转换未返回输出文件路径。");
+      showConversion(null);
+      resetTree(); clearSelection(); setActiveEntry(null);
+      if (visibleRef.current) { pageOffsets.current = []; await fetchPage(0); if (valid()) await restoreTreeContext(parentBrowserPath(reply.path), reply.path); }
+    } catch (reason) { if (valid()) setError(formatError(reason)); }
+    finally {
+      if (request && conversionRequest.current === request) {
+        conversionRequest.current = null;
+        mutatingRef.current = false;
+        if (mounted.current) { setMutating(false); setConversionState(null); if (!valid()) showConversion(null); }
+      }
+    }
+  }
+  async function cancelConversion() {
+    const request = conversionRequest.current;
+    if (!request) { showConversion(null); return; }
+    if (request.cancelPending) return;
+    request.cancelPending = true;
+    if (mounted.current) setConversionState({ requestId: request.requestId, phase: "cancelling" });
+    try {
+      await invokeDesktop("workspace_audio_convert_cancel", { sessionId: request.sessionId, requestId: request.requestId });
+    } catch (reason) {
+      if (conversionRequest.current === request && mounted.current && request.identity === scopeRef.current.identity) { request.cancelPending = false; setConversionState({ requestId: request.requestId, phase: "running" }); setError(formatError(reason)); }
+    }
+  }
   function mutationBlocked(operation: BrowserMutationOperation, source: string, sourceSpace: BrowserSpace): string | null {
     const blocked = optionsRef.current.blockedReason?.();
     if (blocked) return blocked;
@@ -527,6 +593,11 @@ export function useWorkspaceBrowser(
 
   return {
     space,
+    conversionDialog,
+    conversionState,
+    beginConversion,
+    submitConversion,
+    cancelConversion,
     activeEntry,
     focusEntry,
     destination,

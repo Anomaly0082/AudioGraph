@@ -63,7 +63,7 @@ AI成功写出的完整Workflow文本可点击“载入 Workflow 编辑器”，
 - `for_each`：`{"id":"batch","type":"for_each","items":表达式,"steps":[...]}`。items必须为数组，顺序处理，结果为每次迭代的局部步骤结果对象数组。单层最多16个元素；外层已完成的步骤可读，内层绑定在迭代结束后丢弃。
 - `if`：`{"id":"choice","type":"if","condition":{"op":"lt","left":表达式,"right":表达式},"then":[...],"else":[...]}`。else可省略。仅执行所选分支，结果为`{"branch":"then"|"else","steps":{局部结果}}`。op支持eq/ne/lt/lte/gt/gte；顺序比较要求有限数值，eq/ne按JSON值比较。没有while、跳转或递归。
 
-`call`白名单为基础工具：workspace_list、directory_create、file_read_text、file_write_text、file_delete、file_copy_to_ai、file_export、audio_inspect、nodes_list、graph_validate、graph_run。directory_create仅创建AI空间目录，最多3层；file_export可自动创建用户空间下一级结果目录但不覆盖已有文件。不能调用workflow_run/workflow_validate、历史查询工具、模型接口或宿主设置命令。
+`call`白名单为基础工具：workspace_list、directory_create、file_read_text、file_write_text、file_delete、file_copy_to_ai、file_export、audio_inspect、audio_convert、nodes_list、graph_validate、graph_run。directory_create仅创建AI空间目录，最多3层；file_export可自动创建用户空间下一级结果目录但不覆盖已有文件。audio_convert支持output_format为wav（默认PCM16）/flac/mp3/m4a，在AI空间新建目标，不覆盖、不删除源。后续Graph或audio_inspect仍需选wav；压缩格式可用作最终交付，返回path供导出。不能调用workflow_run/workflow_validate、历史查询工具、模型接口或宿主设置命令。
 
 Graph可在call的args中写成带值引用的JSON结构，也可整体作为输入传入。首版不提供任意JSON字符串解析或通用对象补丁指令；已有Graph内容可由外层AI读取后放入输入/调用模板。
 

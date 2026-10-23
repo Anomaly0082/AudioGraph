@@ -1,4 +1,5 @@
 .workspace-files-panel { padding: 16px 14px 10px; }
+.audio-preview-actions { gap: 10px; margin-top: 10px; }
 .workspace-files-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .workspace-files-toolbar h2 { font-size: 14px; margin: 0 auto 0 0; padding-left: 5px; }
 .workspace-files-toolbar select { max-width: 150px; }

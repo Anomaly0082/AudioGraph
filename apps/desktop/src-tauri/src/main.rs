@@ -19,6 +19,9 @@ mod workflow_editor;
 mod workspace_browser;
 mod workspace_files;
 mod workspace_file_commands;
+mod audio_conversion;
+mod audio_conversion_commands;
+mod ffmpeg_bundle;
 mod plugin_snapshot;
 mod plugin_manager;
 mod run_records;
@@ -178,6 +181,8 @@ fn main() {
             ,workspace_browser::workspace_browser_text
             ,workspace_browser::workspace_browser_audio
             ,workspace_file_commands::workspace_files_mutate
+            ,audio_conversion_commands::workspace_audio_convert
+            ,audio_conversion_commands::workspace_audio_convert_cancel
             ,plugin_manager::plugin_manager_list
             ,plugin_manager::plugin_manager_install
             ,plugin_manager::plugin_manager_set_enabled

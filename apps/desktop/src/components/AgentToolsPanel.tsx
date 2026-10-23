@@ -1,5 +1,6 @@
 import type { AgentTools } from "../hooks/useAgentTools";
 import type { GraphDocument } from "../model";
+import { workspaceDisplayPath } from "../recent-workspaces";
 import Disclosure from "./Disclosure";
 import ConversationTurnView from "./ConversationTurnView";
 import { Plus, Send, Settings2, Square } from "lucide-react";
@@ -89,9 +90,9 @@ export default function AgentToolsPanel({
           <>
             <dl>
               <dt>用户工作区 · 只读 / 新建交付</dt>
-              <dd>{agent.spaces.user_root}</dd>
+              <dd>{workspaceDisplayPath(agent.spaces.user_root)}</dd>
               <dt>AI 工作区 · 可增删改</dt>
-              <dd>{agent.spaces.ai_root}</dd>
+              <dd>{workspaceDisplayPath(agent.spaces.ai_root)}</dd>
             </dl>
             <p className="hint">{agent.spaces.tools.join(" · ")}</p>
           </>

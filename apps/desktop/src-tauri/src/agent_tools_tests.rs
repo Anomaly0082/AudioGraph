@@ -1,6 +1,10 @@
 use super::*;
 use std::sync::atomic::AtomicU64;
 
+#[cfg(windows)]
+#[path = "audio_conversion_asr_tests.rs"]
+mod audio_conversion_asr_tests;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(windows)]
@@ -262,6 +266,8 @@ fn spaces() -> (std::path::PathBuf, ToolWorkspaces) {
 
 #[test]
 fn registry_and_dispatch_agree_on_modes() {
+    assert!(names("workflow").contains(&"audio_convert".to_owned()));
+    assert!(!names("graph").contains(&"audio_convert".to_owned()));
     assert!(!names("graph").contains(&"graph_run".to_owned()));
     assert!(names("workflow").contains(&"graph_run".to_owned()));
     assert!(names("workflow").contains(&"workflow_validate".to_owned()));
@@ -276,6 +282,79 @@ fn registry_and_dispatch_agree_on_modes() {
         assert_eq!(described,names(mode));
         assert!(definitions(mode).iter().all(|v| v["function"]["parameters"]["additionalProperties"] == false));
     }
+}
+
+#[test]
+fn audio_conversion_tool_rejects_permission_expansion_before_execution() {
+    tauri::async_runtime::block_on(async {
+        let (root, spaces) = spaces();
+        let mut context = ToolContext::new(spaces, Arc::new(BackendManager::default()), "unconnected".into());
+        let args = json!({"source_space":"user","source_path":"input.mp3","path":"output.wav"});
+        let cancel = AtomicBool::new(false);
+        assert!(context.dispatch("graph", "audio_convert", &args, &cancel).await.unwrap_err().contains("not available"));
+        for (key,value) in [("target_space",json!("user")),("ffmpeg_args",json!(["-y"])),("channels",json!(3)),("sample_rate",json!(0)),("sample_rate",json!("48000"))] {
+            let mut bad = args.clone(); bad[key] = value;
+            assert!(context.dispatch("workflow", "audio_convert", &bad, &cancel).await.is_err());
+        }
+        let program = json!({"schema_version":1,"inputs":{},"steps":[{"id":"convert","type":"call","tool":"audio_convert","args":args}],"outputs":{"audio":{"$ref":"/steps/convert/path"}}});
+        assert!(workflow::validate(&program).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "Requires prepared bundled FFmpeg; converts synthetic audio through the real AI/workflow tool adapter"]
+fn audio_conversion_workflow_to_graph_roundtrip() {
+    use crate::backend::{Connection, DisconnectCallback};
+    tauri::async_runtime::block_on(async {
+        let (root, spaces) = spaces();
+        let source = spaces.user_root.join("source.wav");
+        let rate=16000_u32; let frames=1600_u32; let size=frames*2;
+        let mut wav=Vec::new(); wav.extend(b"RIFF"); wav.extend((36+size).to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16_u32.to_le_bytes()); wav.extend(1_u16.to_le_bytes()); wav.extend(1_u16.to_le_bytes());
+        wav.extend(rate.to_le_bytes()); wav.extend((rate*2).to_le_bytes()); wav.extend(2_u16.to_le_bytes()); wav.extend(16_u16.to_le_bytes());
+        wav.extend(b"data"); wav.extend(size.to_le_bytes());
+        for i in 0..frames { wav.extend((((i as f32 * 0.1).sin()*5000.) as i16).to_le_bytes()); }
+        std::fs::write(&source,&wav).unwrap();
+        let ffmpeg=crate::audio_conversion::locate_ffmpeg(&spaces).unwrap();
+        let mut encode=std::process::Command::new(ffmpeg);
+        use std::os::windows::process::CommandExt;
+        encode.creation_flags(0x08000000).args(["-hide_banner","-nostdin","-loglevel","error","-n","-i"])
+            .arg(&source).args(["-c:a","aac"]).arg(spaces.user_root.join("input.m4a"));
+        assert!(encode.status().unwrap().success());
+        let original = std::fs::read(spaces.user_root.join("input.m4a")).unwrap();
+        let executable=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build/Debug/control-cli.exe");
+        let callback:DisconnectCallback=Arc::new(|_|{});
+        let shared=Arc::new(BackendManager::with_test_connection(Connection::spawn(&executable,spaces.user_root.clone(),"convert-e2e".into(),false,false,callback.clone()).unwrap()));
+        let owned=Arc::new(BackendManager::with_test_connection(Connection::spawn(&executable,spaces.ai_root.clone(),"convert-ai".into(),false,false,callback).unwrap()));
+        let mut context=ToolContext::new(spaces,shared.clone(),"convert-e2e".into());
+        context.owned=Some((owned,"convert-ai".into()));
+        let cancel=AtomicBool::new(false);
+        let program=json!({"schema_version":1,"inputs":{},"steps":[
+            {"id":"convert","type":"call","tool":"audio_convert","args":{"source_space":"user","source_path":"input.m4a","path":"converted.wav"}},
+            {"id":"inspect","type":"call","tool":"audio_inspect","args":{"space":"ai","path":{"$ref":"/steps/convert/path"}}},
+            {"id":"run","type":"call","tool":"graph_run","args":{"mode":"offline","graph":{"schema_version":1,
+                "nodes":[{"id":"input","type":"wav_input","parameters":{"path":{"$ref":"/steps/convert/path"}}},{"id":"output","type":"wav_output","parameters":{"path":"processed.wav"}}],
+                "connections":[{"from":{"node":"input","port":"audio"},"to":{"node":"output","port":"audio"}}],"exports":[]}}},
+            {"id":"export","type":"call","tool":"file_export","args":{"path":"processed.wav","user_path":"delivered.wav"}}
+        ],"outputs":{"converted":{"$ref":"/steps/convert"},"delivered":{"$ref":"/steps/export/path"}}});
+        let report=workflow::run(&workflow::validate(&program).unwrap(),None,&mut context,&cancel).await;
+        assert_eq!(report.state,"succeeded","{}",serde_json::to_string(&report).unwrap());
+        assert_eq!(std::fs::read(context.spaces.user_root.join("input.m4a")).unwrap(),original);
+        assert!(context.spaces.user_root.join("delivered.wav").is_file());
+        assert!(!context.spaces.user_root.join("converted.wav").exists());
+        for format in ["wav","flac","mp3","m4a"] {
+            let path = format!("delivery.{format}");
+            let result = context.dispatch("workflow", "audio_convert", &json!({"source_space":"ai","source_path":"processed.wav","path":path,"output_format":format}), &cancel).await.unwrap();
+            assert_eq!(result["output_format"], format);
+            assert!(context.spaces.ai_root.join(&path).is_file());
+            assert!(!context.spaces.user_root.join(&path).exists());
+        }
+        assert!(context.dispatch("workflow","audio_convert",&json!({"source_space":"user","source_path":"input.m4a","path":"converted.wav"}),&cancel).await.is_err());
+        context.shutdown().await.unwrap(); shared.shutdown().unwrap(); drop(context); drop(shared);
+        std::fs::remove_dir_all(root).unwrap();
+    });
 }
 
 #[test]

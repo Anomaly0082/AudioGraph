@@ -20,7 +20,9 @@ pub(crate) fn valid_mode(mode: &str) -> bool { matches!(mode, "graph" | "workflo
 pub(crate) fn names(mode: &str) -> Vec<String> {
     if !valid_mode(mode) { return Vec::new(); }
     let mut names = vec!["workspace_list", "file_read_text", "file_write_text", "file_delete",
-        "file_copy_to_ai", "file_export", "directory_create", "audio_inspect", "nodes_list", "graph_validate"];
+        "file_copy_to_ai", "file_export", "directory_create", "audio_inspect"];
+    if mode == "workflow" { names.push("audio_convert"); }
+    names.extend(["nodes_list", "graph_validate"]);
     if mode == "workflow" { names.extend(["graph_run", "workflow_validate", "workflow_run"]); }
     names.extend(run_history_tools::NAMES.iter().copied());
     names.into_iter().map(str::to_owned).collect()
@@ -48,13 +50,16 @@ pub(crate) fn definitions(mode: &str) -> Vec<Value> {
         ("file_export","Copy one AI file to a NEW user file, never overwrite. Prefer one fresh output folder per batch and reuse it for that batch's files. user_path='batch-name/output.wav' safely creates the single top-level folder if missing; deeper missing directories are not created. This is not recursive directory export.",schema(json!({"path":path,"user_path":path}), &["path","user_path"])),
         ("directory_create","Create a directory in the AI workspace ONLY, including missing parents, at most 3 levels below its root (a/b/c). Existing normal directories succeed with created=false. No user-workspace directory access. The same depth limit applies to file_write_text and file_copy_to_ai parent creation.",schema(json!({"path":path}), &["path"])),
         ("audio_inspect","Return PCM16 WAV metadata without audio samples.",schema(json!({"space":space,"path":path}), &["space","path"])),
+        ("audio_convert","Convert local MP3, M4A, AAC, FLAC, OGG, WAV or WebM audio to a NEW file in the AI workspace. output_format: wav (default, PCM16), flac, mp3 (target 192 kbps), or m4a (AAC target 192 kbps). The output extension MUST match. Actual bit_rate is returned when available. MP3/M4A are lossy; repeated encoding may reduce quality. Originals are preserved; existing targets are never overwritten. Defaults preserve sample rate and mono/stereo channels; unsupported encoder rates fail instead of silently resampling. Optional sample_rate/channels explicitly adapt inputs. Parent folder must exist; use directory_create if needed. No arbitrary FFmpeg arguments or network media. Input max 512 MiB, output max 256 MiB within AI quota, timeout 120 seconds or earlier workflow deadline. frames is exact for WAV and null for compressed outputs; duration_seconds is container metadata. Graph audio input and audio_inspect still require PCM16 WAV; choose wav for processing, other formats for delivery. Export separately if requested.",schema(json!({"source_space":space,"source_path":path,"path":path,
+            "output_format":{"type":"string","enum":["wav","flac","mp3","m4a"]},
+            "sample_rate":{"type":"integer","minimum":8000,"maximum":192000},"channels":{"type":"integer","enum":[1,2]}}), &["source_space","source_path","path"])),
         ("nodes_list","List available offline and streaming audio nodes.",schema(json!({}), &[])),
         ("graph_validate","Validate a graph whose file paths are relative to the selected workspace.",validation),
         ("graph_run","Run a graph in the AI workspace; outputs remain there.",execution),
         ("workflow_validate","Read a workflow JSON file (64 KiB maximum) and validate its structure without running steps. Workflow v1 uses schema_version:1, inputs:{}, steps:[{id,type}], outputs:{}; steps are set, compute, concat, filter, select, call, for_each, or if. compute uses op:add/sub/mul/div with 2 args, or abs with 1 arg. concat uses 0..64 parts that resolve to strings/numbers. filter uses items plus an if-shaped condition; select uses items, by expression and order:min/max. Both allow at most 16 items; /item and /index are local to condition/by. select returns found/item/index/score; empty means found:false, ties choose first. References use {$ref:\"/inputs/name\"} or earlier /steps/id paths. Operand types and file paths are checked again at runtime.",schema(json!({"space":space,"path":path}), &["space","path"])),
         ("workflow_run","Run a validated workflow JSON file. inputs overrides only declared input keys. Calls use the existing basic tools; a failed step returns a partial report.",schema(json!({"space":space,"path":path,"inputs":{"type":"object"}}), &["space","path"])),
     ];
-    let mut definitions: Vec<Value> = rows.into_iter().filter(|(name,_,_)| mode == "workflow" || !matches!(*name, "graph_run" | "workflow_validate" | "workflow_run"))
+    let mut definitions: Vec<Value> = rows.into_iter().filter(|(name,_,_)| mode == "workflow" || !matches!(*name, "graph_run" | "workflow_validate" | "workflow_run" | "audio_convert"))
         .map(|(name,description,parameters)| json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})).collect();
     definitions.extend(run_history_tools::definitions());
     definitions
@@ -434,6 +439,20 @@ impl ToolContext {
         if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
         if workflow_deadline.is_some_and(|deadline| Instant::now() >= deadline) { return Err("Workflow deadline exceeded".into()); }
         match name {
+            "audio_convert" => {
+                fields(args, &["source_space","source_path","path"], &["sample_rate","channels","output_format"])?;
+                let output_format = match args.get("output_format") {
+                    None => crate::audio_conversion::OutputFormat::Wav,
+                    Some(value) => crate::audio_conversion::OutputFormat::parse(value.as_str().ok_or("output_format must be a string")?)?,
+                };
+                let rate = args.get("sample_rate").map(|value| value.as_u64().filter(|n| (8000..=192000).contains(n))
+                    .map(|n| n as u32).ok_or("sample_rate must be an integer from 8000 to 192000")).transpose()?;
+                let channels = args.get("channels").map(|value| value.as_u64().filter(|n| matches!(*n,1|2))
+                    .map(|n| n as u16).ok_or("channels must be 1 or 2")).transpose()?;
+                crate::audio_conversion_commands::convert_for_agent(self.spaces.clone(), arg(args,"source_space")?.into(),
+                    arg(args,"source_path")?.into(), arg(args,"path")?.into(),
+                    crate::audio_conversion::ConversionOptions { sample_rate:rate, channels, output_format }, cancel, workflow_deadline).await
+            }
             "workspace_list" => { fields(args,&["space"],&["path","offset","limit"])?; self.spaces.dispatch(name,args) }
             "file_read_text" | "audio_inspect" => {
                 fields(args,&["space","path"],&[])?;
@@ -567,7 +586,7 @@ impl WorkflowHost for ToolContext {
             self.workflow_step = Some(step_path.into());
             let result = self.dispatch_basic("workflow",tool,&args,cancel,Some(deadline)).await;
             if let Ok(value) = &result {
-                if matches!(tool,"file_export" | "file_write_text" | "file_copy_to_ai") {
+                if matches!(tool,"file_export" | "file_write_text" | "file_copy_to_ai" | "audio_convert") {
                     if let (Some(space),Some(path)) = (value.get("space").and_then(Value::as_str),value.get("path").and_then(Value::as_str)) {
                         self.workflow_outputs.push(RunFileDraft { space:space.into(),path:path.into(),role:"output".into() });
                     }

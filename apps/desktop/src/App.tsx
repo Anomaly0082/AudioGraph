@@ -260,11 +260,11 @@ export default function App() {
         (session.taskActive ||
           session.cleanupBusy ||
           agent.busy ||
-          workflowEditor.busy) && (
+          workflowEditor.busy || !!files.conversionState) && (
           <div className="global-activity" role="status">
             <span className="activity-pulse" />
             <span>
-              {agent.busy
+              {files.conversionState ? (files.conversionState.phase === "cancelling" ? "正在取消音频转换…" : "正在转换音频…") : agent.busy
                 ? "AI 工具调用中"
                 : workflowEditor.busy
                   ? workflowEditor.action === "stopping"
@@ -280,7 +280,7 @@ export default function App() {
             </span>
             <button
               onClick={
-                agent.busy
+                files.conversionState ? () => setPage("files") : agent.busy
                   ? goWorkbench
                   : workflowEditor.busy
                     ? () => {
@@ -292,7 +292,7 @@ export default function App() {
                       : goWorkbench
               }
             >
-              {agent.busy
+              {files.conversionState ? "查看文件" : agent.busy
                 ? "查看工具助手"
                 : workflowEditor.busy
                   ? "查看 Workflow"
@@ -300,7 +300,7 @@ export default function App() {
                     ? "查看任务"
                     : "查看工作台"}
             </button>
-            {agent.busy
+            {files.conversionState ? <button className="danger" disabled={files.conversionState.phase === "cancelling"} onClick={() => void files.cancelConversion()}>取消转换</button> : agent.busy
               ? agent.canStop && (
                   <button
                     className="danger"

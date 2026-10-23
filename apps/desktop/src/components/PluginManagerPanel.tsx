@@ -1,4 +1,5 @@
 import { Puzzle, FolderPlus, RefreshCw, Trash2 } from "lucide-react";
+import { workspaceDisplayPath } from "../recent-workspaces";
 import type { PluginManager } from "../hooks/usePluginManager";
 
 type StartupError = { package: string; code: string; message: string };
@@ -48,7 +49,7 @@ export default function PluginManagerPanel({
       {view && (
         <>
           <p className="hint">
-            安装目录：<code style={{ overflowWrap: "anywhere" }}>{view.directory.replace(/^\\\\\?\\/, "")}</code>
+            安装目录：<code style={{ overflowWrap: "anywhere" }}>{workspaceDisplayPath(view.directory)}</code>
           </p>
           {view.entries.length === 0 && <p className="muted">尚未安装插件。</p>}
           {view.entries.map((entry) => (

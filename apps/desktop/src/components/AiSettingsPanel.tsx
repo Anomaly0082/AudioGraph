@@ -1,5 +1,6 @@
 import { Settings2, Save, Eraser } from "lucide-react";
 import type { AiSettings } from "../hooks/useAiSettings";
+import { workspaceDisplayPath } from "../recent-workspaces";
 
 export type AiSettingsPanelProps = {
   settings: AiSettings;
@@ -125,7 +126,7 @@ export default function AiSettingsPanel({
       </div>
       {settingsPath && (
         <p className="hint">
-          保存位置：<code>{settingsPath}</code>
+          保存位置：<code>{workspaceDisplayPath(settingsPath)}</code>
         </p>
       )}
       {settingsError && (

@@ -69,6 +69,19 @@ test("opening history is disabled while connected, busy, AI active, or history p
     assert.match(html, /class="recent-workspace-open"[^>]*disabled=""/);
   }
 });
+
+test("workspace input displays friendly paths without changing the stored source", () => {
+  for (const [raw, display] of [
+    [String.raw`\\?\C:\AAAProject\Temp\TestSwitch`, String.raw`C:\AAAProject\Temp\TestSwitch`],
+    [String.raw`\\?\UNC\server\share\音频`, String.raw`\\server\share\音频`],
+  ]) {
+    const source = {workspace: raw, connection:{sessionId:"s"}};
+    const html = panel(source);
+    assert.ok(html.includes(`value="${display}"`));
+    assert.ok(!html.includes(raw));
+    assert.equal(source.workspace, raw);
+  }
+});
 test("failed or missing directory remains visible for retry and removal", () => {
   const html = panel({ error: "directory missing", recentWorkspaces: { paths: ["C:/missing"], busy: false, warning: "", remove() {}, clear() {} } });
   assert.match(html, /C:\/missing/); assert.match(html, /移除/);

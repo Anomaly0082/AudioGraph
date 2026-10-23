@@ -53,6 +53,23 @@ export type BrowserSnapshot = Readonly<{
 export const AUDIO_PREVIEW_LIMIT = 32 * 1024 * 1024;
 export const TEXT_PREVIEW_LIMIT = 256 * 1024;
 export const BROWSER_PAGE_SIZE = 100;
+export const audioOutputFormats = ["wav", "flac", "mp3", "m4a"] as const;
+export type AudioOutputFormat = typeof audioOutputFormats[number];
+export function replaceConvertedAudioExtension(name: string, format: AudioOutputFormat): string {
+  return `${name.replace(/\.[^./\\]+$/, "")}.${format}`;
+}
+export function defaultConvertedAudioName(path: string, format: AudioOutputFormat = "wav"): string {
+  const name = path.split("/").pop() ?? "audio";
+  return `${name.replace(/\.[^.]+$/, "") || "audio"}_converted.${format}`;
+}
+export function convertedAudioOutputPath(source: string, name: string, format: AudioOutputFormat = "wav"): string {
+  if (!audioOutputFormats.includes(format)) throw new Error("请选择支持的输出格式。");
+  const clean = browserEntryName(name);
+  if (!clean.toLowerCase().endsWith(`.${format}`)) throw new Error(`输出文件名必须以 .${format} 结尾，与所选格式一致。`);
+  const target = [parentBrowserPath(source), clean].filter(Boolean).join("/");
+  if (target.toLowerCase() === source.toLowerCase()) throw new Error("输出文件名不能与源文件相同。");
+  return target;
+}
 
 const audioTypes: Record<string, string> = {
   wav: "audio/wav",

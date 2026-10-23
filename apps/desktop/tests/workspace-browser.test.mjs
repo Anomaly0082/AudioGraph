@@ -16,6 +16,9 @@ const {
   browserRelativePath,
   browserMutationTarget,
   browserEntryName,
+  defaultConvertedAudioName,
+  convertedAudioOutputPath,
+  replaceConvertedAudioExtension,
   browserPathContains,
   formatBrowserBytes,
   matchesBrowserSnapshot,
@@ -336,6 +339,22 @@ test("mutation targets reject workspace escape and Windows reserved names", () =
   assert.throws(() => browserEntryName("folder/name"));
 });
 
+test("audio conversion uses explicit matching formats beside its read-only source", () => {
+  assert.equal(defaultConvertedAudioName("录音/a.test.m4a"), "a.test_converted.wav");
+  assert.equal(convertedAudioOutputPath("录音/a.m4a", "new.wav"), "录音/new.wav");
+  for (const name of ["a.mp3", "../a.wav", "C:/a.wav", "a/b.wav", "NUL.wav"])
+    assert.throws(() => convertedAudioOutputPath("录音/a.m4a", name));
+  assert.throws(() => convertedAudioOutputPath("录音/a.wav", "a.wav"));
+  for (const format of ["wav", "flac", "mp3", "m4a"]) {
+    assert.equal(defaultConvertedAudioName("录音/a.m4a", format), `a_converted.${format}`);
+    assert.equal(convertedAudioOutputPath("录音/a.wav", `custom.${format}`, format), `录音/custom.${format}`);
+    assert.equal(replaceConvertedAudioExtension("我的录音.v2.wav", format), `我的录音.v2.${format}`);
+    assert.equal(replaceConvertedAudioExtension("new name", format), `new name.${format}`);
+  }
+  assert.throws(() => convertedAudioOutputPath("录音/a.wav", "new.wav", "flac"), /所选格式一致/);
+  assert.throws(() => convertedAudioOutputPath("录音/a.wav", "new.ogg", "ogg"), /支持的输出格式/);
+});
+
 test("file tree uses meaningful SVG icons and omits inactive pagination", () => {
   const html = render({
     entries: [
@@ -393,6 +412,8 @@ test("audio selection requires loading and loaded native controls never autoplay
     render({ selected: entry({ bytes: AUDIO_PREVIEW_LIMIT + 1 }) }),
     /文件超过 32 MiB/,
   );
+  const large = render({ filesEnabled: true, selected: entry({ bytes: AUDIO_PREVIEW_LIMIT + 1 }) });
+  assert.match(large, /<button>格式转换<\/button>/, "snapshot size does not disable conversion");
 });
 
 test("HTML remains escaped plain text and truncated JSON never offers editor import", () => {

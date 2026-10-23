@@ -1,0 +1,36 @@
+AudioProcess uses FFmpeg as a separate local executable with its separately
+replaceable shared libraries. FFmpeg is copyright the FFmpeg developers and
+other contributors. This pinned build reports LGPL version 3 or any later
+version, and is distributed WITHOUT ANY WARRANTY. See licenses/ for FFmpeg's
+license texts and upstream authorship/license information.
+
+Upstream binary provider: https://github.com/BtbN/FFmpeg-Builds
+Pinned release: autobuild-2026-10-22-13-06
+Variant: win64-lgpl-shared-8.1
+FFmpeg revision: 5c4f5744cd60943125a78db692b728210102f255
+Build scripts revision: 937868360a21d711ec94a33f5591d345ad9b7754
+
+The executable and DLLs remain ordinary separate files. You may replace them
+with compatible modified versions, and reverse engineer those components to
+debug such modifications as permitted by their licenses. AudioProcess does
+not enforce binary/library hashes at runtime. Build-time hashes identify the
+upstream artifacts prepared by the release maintainer; they do not revoke
+replacement, relinking, or other rights granted by upstream licenses.
+
+IMPORTANT DEVELOPMENT STATUS
+This runtime directory alone is not a complete source distribution. Do not
+redistribute it unless the matching FFmpeg source, BtbN build scripts/patches,
+complete dependency sources, and their required notices accompany it. The
+release packaging script fails closed while those materials are incomplete.
+The source package must be distributed beside each binary package, and hosted
+at the same distribution location if binary downloads are published.
+
+The build enables many non-system dependencies. Their individual authorship,
+license texts and build recipes must remain in the accompanying source and
+notice package. A link to an upstream website is not a substitute for that
+package. The upstream download cache is not a substitute for a completed
+correspondence and notice review before public distribution.
+
+FFmpeg is a trademark of Fabrice Bellard. Codec patent and other jurisdiction-
+specific issues may require separate assessment. These preparation measures
+do not establish zero legal risk and are not a legal opinion.
