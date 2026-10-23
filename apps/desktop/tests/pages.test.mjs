@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderWithoutDecorativeIcons as renderToStaticMarkup } from "./markup-helpers.mjs";
 
 const require = createRequire(import.meta.url);
 const AppShell =
@@ -195,15 +195,6 @@ test("workspace uses one compact entry with a readable full path tooltip", () =>
 });
 
 test("workbench keeps only the tool assistant and explicit view buttons", () => {
-  const input = {
-    path: "sample.wav",
-    inspection: null,
-    busy: false,
-    error: "",
-    setPath: noop,
-    choose: noop,
-    check: noop,
-  };
   const agent = {
     mode: "graph",
     busy: false,
@@ -243,19 +234,10 @@ test("workbench keeps only the tool assistant and explicit view buttons", () => 
     setPrompt: noop,
   };
   const html = render(WorkbenchPage, {
-    input,
     connected: true,
     desktop: true,
     agent,
     agentBlocked: false,
-    setup: {
-      approach: "ai",
-      preset: "wav",
-      output: "processed.wav",
-      gain: "-6",
-    },
-    onSetup: noop,
-    onPrepare: noop,
     onOpenSettings: noop,
     onAgentSend: noop,
     onAgentApply: noop,
@@ -266,8 +248,22 @@ test("workbench keeps only the tool assistant and explicit view buttons", () => 
   assert.match(html, /查看工作区与可用工具/);
   assert.doesNotMatch(
     html,
-    /单次 Graph 提案|待确认提案|<details|<summary|API Key|apiKey/,
+    /快捷模板|准备方案|AI 助手<\/button>|音频输入|输出文件|增益 \(dB\)|单次 Graph 提案|待确认提案|<details|<summary|API Key|apiKey/,
   );
+  assert.match(html, /附带当前 Graph 草稿/);
+  assert.match(html, /id="agent-prompt"/);
+  assert.match(html, />发送<\/button>/);
+  const disconnected = render(WorkbenchPage, {
+    connected: false,
+    desktop: true,
+    agent,
+    agentBlocked: false,
+    onOpenSettings: noop,
+    onAgentSend: noop,
+    onAgentApply: noop,
+  });
+  assert.match(disconnected, /请先通过右上角打开音频所在目录/);
+  assert.doesNotMatch(disconnected, /快捷模板|准备方案/);
 });
 
 test("editor displays its independent draft while a task owns a different submission", () => {

@@ -58,9 +58,9 @@
 .graph-canvas {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #34445e;
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: #0c1421;
+  background: var(--surface-subtle);
 }
 .canvas-toolbar {
   display: flex;
@@ -69,8 +69,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
-  border-bottom: 1px solid #2c3b53;
-  background: #162131;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-subtle);
 }
 .canvas-tools {
   display: flex;
@@ -89,7 +89,7 @@
   overflow: clip;
   overscroll-behavior: auto;
   touch-action: none;
-  background-image: radial-gradient(#29374a 1px, transparent 1px);
+  background-image: radial-gradient(#d7dee7 1px, transparent 1px);
   background-size: 20px 20px;
 }
 .canvas-viewport.panning,
@@ -98,7 +98,7 @@
   user-select: none;
 }
 .canvas-viewport:focus-visible {
-  outline: 2px solid #9ab3ff;
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 .canvas-surface {
@@ -114,14 +114,14 @@
 }
 .edge-line {
   fill: none;
-  stroke: var(--wire-color, #a9bbd2);
+  stroke: var(--wire-color, #708197);
   stroke-width: 2.5;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 .edge-shadow {
   fill: none;
-  stroke: #0009;
+  stroke: #ffffffcc;
   stroke-width: 5;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
@@ -135,36 +135,36 @@
   vector-effect: non-scaling-stroke;
 }
 .canvas-edge:hover .edge-line {
-  stroke: #f4e6bd;
+  stroke: var(--accent);
 }
 .canvas-edge.selected .edge-line,
 .canvas-edge:focus-within .edge-line {
-  stroke: #ffa950;
+  stroke: #ad671c;
   stroke-width: 3;
 }
 .edge-preview {
   fill: none;
-  stroke: #ede5d3;
+  stroke: #708197;
   stroke-width: 2.5;
   stroke-linecap: round;
   vector-effect: non-scaling-stroke;
 }
 .edge-preview.valid {
-  stroke: #91dab3;
+  stroke: var(--success);
 }
 .edge-preview.invalid {
-  stroke: #ef8787;
+  stroke: var(--danger);
 }
 .canvas-node {
   position: absolute;
-  border: 1px solid #4a5e7d;
+  border: 1px solid var(--line);
   border-radius: 9px;
-  background: #152235;
-  box-shadow: 0 5px 12px #0005;
+  background: var(--surface);
+  box-shadow: 0 3px 10px #2631430d;
 }
 .canvas-node.selected {
-  border-color: #a8c0ff;
-  box-shadow: 0 0 0 2px #7694e644;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px #526ad824;
 }
 .canvas-node.unknown {
   border-style: dashed;
@@ -174,7 +174,7 @@
   width: 100%;
   height: 65px;
   border: 0;
-  border-bottom: 1px solid #3b4b64;
+  border-bottom: 1px solid var(--line);
   border-radius: 8px 8px 0 0;
   text-align: left;
   cursor: grab;
@@ -231,14 +231,14 @@
   flex-shrink: 0;
   width: 11px;
   height: 11px;
-  background: #172030;
-  border: 2px solid var(--socket-color, #a9bbd2);
+  background: var(--surface);
+  border: 2px solid var(--socket-color, #708197);
   border-radius: 50%;
-  box-shadow: 0 0 0 1px #070c14;
+  box-shadow: 0 0 0 1px var(--surface);
 }
 .canvas-port.connected .port-dot,
 .output-port .port-dot {
-  background: var(--socket-color, #a9bbd2);
+  background: var(--socket-color, #708197);
 }
 .input-port .port-dot {
   margin-left: -12px;
@@ -247,27 +247,27 @@
   margin-right: -12px;
 }
 .canvas-port.target-valid .port-dot {
-  box-shadow: 0 0 0 3px #77d3a799;
+  box-shadow: 0 0 0 3px #28755630;
 }
 .canvas-port.target-invalid .port-dot {
-  box-shadow: 0 0 0 3px #ef8787aa;
+  box-shadow: 0 0 0 3px #b8444f30;
 }
 .canvas-port.connecting .port-dot {
-  background: #f2c178;
-  border-color: #ffe2af;
+  background: var(--warning);
+  border-color: var(--warning-line);
 }
 .canvas-help {
   min-height: 36px;
   padding: 9px 12px;
   font-size: 11px;
-  color: #9aaeca;
-  border-top: 1px solid #2c3b53;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
 }
 .canvas-empty {
   position: absolute;
   top: 110px;
   left: 60px;
-  color: #8da1bc;
+  color: var(--muted);
 }
 .editor-json .code-editor {
   margin-top: 10px;

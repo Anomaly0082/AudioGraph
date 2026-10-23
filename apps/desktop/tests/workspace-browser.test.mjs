@@ -14,6 +14,9 @@ const {
   browserConfigurationKind,
   browserFileKind,
   browserRelativePath,
+  browserMutationTarget,
+  browserEntryName,
+  browserPathContains,
   formatBrowserBytes,
   matchesBrowserSnapshot,
   parentBrowserPath,
@@ -293,7 +296,7 @@ function render(overrides = {}, props = {}) {
   );
 }
 
-test("browser renders read-only directory entries, spaces, breadcrumbs and pagination", () => {
+test("browser renders compact tree entries, shared toolbar, breadcrumbs and pagination", () => {
   const html = render({
     path: "sounds",
     entries: [
@@ -308,13 +311,70 @@ test("browser renders read-only directory entries, spaces, breadcrumbs and pagin
     listing: { total: null, partial: true, warnings: [], next_offset: 100 },
   });
   assert.match(html, /文件工作区/);
-  assert.match(html, /返回上级/);
   assert.match(html, /根目录/);
   assert.match(html, /sounds\/clip.wav|clip.wav/);
   assert.match(html, /下一页/);
   assert.match(html, /总条目数未知/);
   assert.match(html, /当前列表仅包含部分条目/);
-  assert.doesNotMatch(html, /删除|覆盖|创建目录|上传|<details|<summary/);
+  assert.doesNotMatch(html, /<details|<summary/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /role="tree"/);
+  assert.match(html, /role="treeitem"/);
+  assert.match(html, /新建文件夹/);
+  assert.match(html, /粘贴/);
+  assert.doesNotMatch(html, /的操作|workspace-file-actions/);
+});
+
+test("mutation targets reject workspace escape and Windows reserved names", () => {
+  assert.equal(browserMutationTarget("folder/new.txt"), "folder/new.txt");
+  for (const value of ["", "../a", "C:/a", "a\\b", "a//b", "a/./b", "a/NUL.txt", "a/CON", "a/file.", "a/file ", "a/*.txt", "a/a:b"])
+    assert.throws(() => browserMutationTarget(value));
+  assert.equal(browserPathContains("Folder", "folder/child/file.json"), true);
+  assert.equal(browserPathContains("Folder", "folder"), true);
+  assert.equal(browserPathContains("Folder", "folder-other/file.json"), false);
+  assert.equal(browserEntryName("新文件夹"), "新文件夹");
+  assert.throws(() => browserEntryName("folder/name"));
+});
+
+test("file tree uses meaningful SVG icons and omits inactive pagination", () => {
+  const html = render({
+    entries: [
+      entry({name:"folder",path:"folder",kind:"directory",bytes:null}),
+      entry({name:"clip.wav",path:"clip.wav"}),
+      entry({name:"graph.json",path:"graph.json"}),
+      entry({name:"notes.txt",path:"notes.txt"}),
+      entry({name:"archive.zip",path:"archive.zip"}),
+    ],
+    branches: {folder:{expanded:true,loading:false,listing:{entries:[],next_offset:null,warnings:[]}}},
+    listing: {total:5,next_offset:null,warnings:[]},
+    canPreviousPage:false,
+  });
+  for (const kind of ["folder", "audio", "json", "text", "file"])
+    assert.match(html, new RegExp(`workspace-entry-icon-${kind}`));
+  assert.match(html, /workspace-tree-twistie expanded/);
+  assert.match(html, /lucide-chevron-right/);
+  assert.doesNotMatch(html, />[·⌄›]</);
+  assert.doesNotMatch(html, /aria-label="上一页"|aria-label="下一页"/);
+  assert.match(html, /aria-label="刷新"/);
+  assert.match(html, /title="clip.wav"/);
+});
+
+test("root view omits repeated location labels and successful-operation banners", () => {
+  const html = render({ notice: "操作已完成", destination: "" });
+  assert.doesNotMatch(html, /根目录|目标目录|操作已完成|workspace-files-destination/);
+  assert.doesNotMatch(html, /aria-label="文件路径"/);
+});
+
+test("trash has no confirmation dialog while import still preserves originals", () => {
+  const base = { path: "nested/data.wav", space: "user", sessionId: "a", identity: "a", directory: "nested", target: "" };
+  const trash = render({ mutationDialog: { ...base, operation: "trash" } });
+  assert.doesNotMatch(trash, /<dialog|移到回收站后可恢复/);
+  const importing = render({ mutationDialog: { ...base, operation: "import", names: ["external.wav"] } });
+  assert.match(importing, /external.wav/);
+  assert.match(importing, /原文件保留/);
+  assert.match(importing, /不覆盖/);
+  assert.match(importing, /<dialog/);
+  assert.match(importing, /取消/);
 });
 
 test("audio selection requires loading and loaded native controls never autoplay", () => {
@@ -327,7 +387,8 @@ test("audio selection requires loading and loaded native controls never autoplay
   assert.equal((loaded.match(/<audio /g) ?? []).length, 1);
   assert.match(loaded, /src="blob:local-only"/);
   assert.match(loaded, /controls=""/);
-  assert.doesNotMatch(loaded, /auto[Pp]lay|iframe|https?:\/\//);
+  // Inline SVG's standard xmlns URL is an identifier, not a network request.
+  assert.doesNotMatch(loaded, /auto[Pp]lay|iframe|(?:src|href)="https?:\/\//);
   assert.match(
     render({ selected: entry({ bytes: AUDIO_PREVIEW_LIMIT + 1 }) }),
     /文件超过 32 MiB/,

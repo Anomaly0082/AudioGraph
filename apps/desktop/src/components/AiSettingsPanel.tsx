@@ -1,3 +1,4 @@
+import { Settings2, Save, Eraser } from "lucide-react";
 import type { AiSettings } from "../hooks/useAiSettings";
 
 export type AiSettingsPanelProps = {
@@ -28,7 +29,7 @@ export default function AiSettingsPanel({
       aria-labelledby="ai-settings-title"
     >
       <div className="section-heading">
-        <h2 id="ai-settings-title">模型服务设置</h2>
+        <h2 id="ai-settings-title"><Settings2 className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />模型服务设置</h2>
         <span className="badge">本机配置</span>
       </div>
       <p className="hint">
@@ -107,6 +108,7 @@ export default function AiSettingsPanel({
           disabled={locked || settingsLoading}
           onClick={() => saveCurrentSettings(workflowBusy)}
         >
+          <Save className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           保存配置
         </button>
         <button
@@ -114,6 +116,7 @@ export default function AiSettingsPanel({
           disabled={locked || settingsLoading}
           onClick={() => void clearSavedSettings(workflowBusy)}
         >
+          <Eraser className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           清除已保存配置
         </button>
         <span className="hint" role="status">

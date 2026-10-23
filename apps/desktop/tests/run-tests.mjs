@@ -26,6 +26,7 @@ const testFiles = [
   "tests/workflow-editor.test.mjs",
   "tests/editor-source.test.mjs",
   "tests/workspace-browser.test.mjs",
+  "tests/workspace-files-review.test.mjs",
   "tests/recent-workspaces.test.mjs",
 ];
 const result = spawnSync(process.execPath, ["--test", ...testFiles], {

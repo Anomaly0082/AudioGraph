@@ -1,0 +1,43 @@
+/* Lucide is the shared UI icon family. Canvas sockets/wires are data, not icons. */
+.ui-icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin-inline-end: 6px;
+  vertical-align: -3px;
+  pointer-events: none;
+}
+.ui-icon-standalone { margin-inline-end: 0; }
+.section-heading h2 .ui-icon { color: var(--muted); }
+.section-heading > .action-row { margin-top: 0; }
+.plugin-entry { margin-top: 10px; }
+
+/* Color feedback only: never interpolate graph coordinates, sizes, or transforms. */
+button, input, textarea, select {
+  transition: background-color var(--motion-fast) var(--motion-ease),
+    border-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease),
+    box-shadow var(--motion-fast) var(--motion-ease);
+}
+button.primary:active:not(:disabled) { background: var(--accent-hover); box-shadow: inset 0 1px 3px #17255730; }
+.nav-link:active:not(:disabled), .disclosure-toggle:active:not(:disabled) { background: var(--accent-soft); }
+.workspace-tree-twistie .lucide-chevron-right { transition: transform var(--motion-fast) var(--motion-ease); }
+
+/* No page remount keys, timers, delayed hiding, or new controller state. */
+@keyframes ui-fade-in { from { opacity: 0; } to { opacity: 1; } }
+#page-content > .page-stack,
+.disclosure-content:not([hidden]),
+.workspace-file-context-menu,
+.workspace-file-dialog[open],
+.app-shell-notices.notices-expanded {
+  animation: ui-fade-in var(--motion-enter) var(--motion-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

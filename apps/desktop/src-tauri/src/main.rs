@@ -17,6 +17,8 @@ mod conversation_commands;
 mod workflow;
 mod workflow_editor;
 mod workspace_browser;
+mod workspace_files;
+mod workspace_file_commands;
 mod plugin_snapshot;
 mod plugin_manager;
 mod run_records;
@@ -115,6 +117,7 @@ fn main() {
         .manage(Arc::new(session_state::SessionStateStore::default()))
         .manage(Arc::new(session_state::CloseCoordinator::default()))
         .manage(Arc::new(commands::ManualRunTracker::default()))
+        .manage(Arc::new(workspace_file_commands::DropGrants::default()))
         .manage(Arc::new(plugin_manager::PluginManager::default()))
         .setup(|app| {
             let manager = app.state::<Arc<backend::BackendManager>>();
@@ -174,12 +177,16 @@ fn main() {
             ,workspace_browser::workspace_browser_list
             ,workspace_browser::workspace_browser_text
             ,workspace_browser::workspace_browser_audio
+            ,workspace_file_commands::workspace_files_mutate
             ,plugin_manager::plugin_manager_list
             ,plugin_manager::plugin_manager_install
             ,plugin_manager::plugin_manager_set_enabled
             ,plugin_manager::plugin_manager_uninstall
         ])
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(event) = event {
+                workspace_file_commands::native_drag(window,event);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let manager = window.state::<Arc<backend::BackendManager>>().inner().clone();
                 if !manager.shutdown_complete.load(Ordering::Acquire) {

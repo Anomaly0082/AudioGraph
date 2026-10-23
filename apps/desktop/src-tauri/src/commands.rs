@@ -4,14 +4,28 @@ use crate::run_records::{RunDraft,RunFileDraft,RunStore};
 use crate::tool_workspaces::ToolWorkspaces;
 use serde_json::Value;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap,HashSet};
 use std::sync::{Arc,Mutex};
 use tauri::Manager;
 use tauri::Emitter;
 
 struct PendingRun { id: String, outputs: Vec<RunFileDraft> }
 #[derive(Default)]
-pub struct ManualRunTracker { tasks: Mutex<HashMap<(String,String),PendingRun>> }
+pub struct ManualRunTracker {
+    tasks: Mutex<HashMap<(String,String),PendingRun>>,
+    operations: Mutex<()>,
+    uncertain_starts: Mutex<HashSet<String>>,
+}
+impl ManualRunTracker {
+    pub(crate) fn with_files_idle<T>(&self, session: &str, action: impl FnOnce() -> Result<T,String>) -> Result<T,String> {
+        let _lease = self.operations.lock().map_err(|_| "文件操作锁不可用")?;
+        if self.uncertain_starts.lock().map_err(|_| "任务状态锁不可用")?.contains(session)
+            || self.tasks.lock().map_err(|_| "任务状态锁不可用")?.keys().any(|(id,_)| id == session) {
+            return Err("当前任务尚未完成收尾或状态未确认，请先停止任务并查看运行记录。".into());
+        }
+        action()
+    }
+}
 
 fn warn(reply: &mut Value, message: String) {
     if let Some(object) = reply.as_object_mut() {
@@ -138,6 +152,10 @@ pub async fn control_request(app: tauri::AppHandle, state: tauri::State<'_, Arc<
 pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStore,
     tracker: &ManualRunTracker, app_data: &std::path::Path, session_id: &str, request: Value) -> Result<Value,String> {
         let op = request.get("op").and_then(Value::as_str).unwrap_or("").to_owned();
+        // Serialize starts with manual mutations without holding the task map over RPC.
+        let _start_lease = if op == "tasks.start" {
+            Some(tracker.operations.lock().map_err(|_| "任务启动锁不可用")?)
+        } else { None };
         if op != "tasks.start" && !matches!(op.as_str(),"tasks.status" | "tasks.result" | "tasks.cancel" | "tasks.release") {
             return manager.request(&session_id,request);
         }
@@ -157,6 +175,7 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
             let started = store.begin(&spaces,&app_data,RunDraft { kind:"graph".into(), origin:"manual".into(),
                 parent_id:None,name:"Graph run".into(),configuration,files:inputs });
             let record = started.map_err(|error| format!("Cannot begin run record; task was not started: {error}"))?;
+            tracker.uncertain_starts.lock().unwrap().insert(session_id.to_owned());
             let mut reply = match manager.request(&session_id,request) {
                 Ok(reply) => reply,
                 Err(error) => {
@@ -172,6 +191,7 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
                         }
                         if let Some(task_id) = task_id {
                             tracker.tasks.lock().unwrap().insert((session_id.to_owned(),task_id.clone()),PendingRun { id:record.id,outputs });
+                            tracker.uncertain_starts.lock().unwrap().remove(session_id);
                             if manager.workspace(session_id).is_err() {
                                 let warnings = interrupt_session(store,tracker,app_data,session_id,&workspace,"Backend session ended during task start");
                                 for warning in warnings { warn(&mut reply,warning); }
@@ -183,6 +203,9 @@ pub(crate) fn recorded_control_request(manager: &BackendManager, store: &RunStor
                             warn(&mut reply,format!("Cannot finish run record: {error}"));
                         }
                     } else {
+                        if reply.get("success") == Some(&Value::Bool(false)) {
+                            tracker.uncertain_starts.lock().unwrap().remove(session_id);
+                        }
                         if let Err(error) = store.finish(&spaces,&app_data,&record.id,"failed",Some(reply.clone()),Some("Backend rejected task start".into()),outputs) {
                             warn(&mut reply,format!("Cannot finish run record: {error}"));
                         }
@@ -220,12 +243,12 @@ pub async fn load_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id
 }
 
 #[tauri::command]
-pub async fn save_graph(state: tauri::State<'_, Arc<BackendManager>>, session_id: String, path: String, graph: Value, expected_revision: Option<String>) -> Result<SavedGraph, String> {
+pub async fn save_graph(state: tauri::State<'_, Arc<BackendManager>>, agent: tauri::State<'_,Arc<crate::agent_runtime::AgentManager>>, session_id: String, path: String, graph: Value, expected_revision: Option<String>) -> Result<SavedGraph, String> {
     let manager = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let workspace = manager.workspace(&session_id)?;
-        crate::graph_files::save_graph_file_with_revision(&workspace, &path, &graph, expected_revision.as_deref())
-    }).await.map_err(|e| format!("保存Graph失败：{e}"))?
+    let agent = agent.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agent.with_idle(|| manager.with_workspace_operation(&session_id, |workspace| {
+        crate::graph_files::save_graph_file_with_revision(workspace, &path, &graph, expected_revision.as_deref())
+    }))).await.map_err(|e| format!("保存Graph失败：{e}"))?
 }
 
 #[cfg(test)]

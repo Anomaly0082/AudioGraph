@@ -1,11 +1,11 @@
+import { useEffect, useRef } from "react";
+import DirectoryBrowser from "../components/WorkspaceFileTree";
 import type { WorkspaceBrowser } from "../hooks/useWorkspaceBrowser";
 import {
   AUDIO_PREVIEW_LIMIT,
-  browserBreadcrumbs,
   browserConfigurationKind,
   browserFileKind,
   formatBrowserBytes,
-  type BrowserSpace,
 } from "../workspace-browser-model";
 
 export type WorkspaceBrowserPageProps = {
@@ -15,119 +15,6 @@ export type WorkspaceBrowserPageProps = {
   onOpenWorkflow: (text: string, label: string) => void;
 };
 
-function DirectoryBrowser({
-  browser,
-  connected,
-}: Pick<WorkspaceBrowserPageProps, "browser" | "connected">) {
-  return (
-    <section className="panel">
-      <div className="section-heading">
-        <h2>文件</h2>
-        <button
-          disabled={!connected || browser.loading}
-          onClick={() => void browser.refresh()}
-        >
-          {browser.loading ? "刷新中…" : "刷新"}
-        </button>
-      </div>
-      <div className="editor-toolbar">
-        <label>
-          工作区
-          <select
-            aria-label="文件工作区"
-            value={browser.space}
-            disabled={!connected}
-            onChange={(event) =>
-              browser.setSpace(event.target.value as BrowserSpace)
-            }
-          >
-            <option value="user">用户工作区</option>
-            <option value="ai">AI 工作区</option>
-          </select>
-        </label>
-        <button disabled={!connected || !browser.path} onClick={browser.up}>
-          返回上级
-        </button>
-      </div>
-      <nav className="action-row" aria-label="文件路径">
-        {browserBreadcrumbs(browser.path).map((part) => (
-          <button
-            key={part.path}
-            disabled={!connected || part.path === browser.path}
-            onClick={() => browser.goTo(part.path)}
-          >
-            {part.name}
-          </button>
-        ))}
-      </nav>
-      {!connected ? (
-        <p className="empty-state">打开工作区后浏览本地文件。</p>
-      ) : (
-        <>
-          {browser.entries.length ? (
-            <div className="run-list" aria-label="工作区文件列表">
-              {browser.entries.map((entry) => (
-                <button
-                  key={entry.path}
-                  className={`run-row ${browser.selected?.path === entry.path ? "selected" : ""}`}
-                  aria-pressed={browser.selected?.path === entry.path}
-                  onClick={() => browser.select(entry)}
-                >
-                  <span>
-                    <strong>{entry.name}</strong>
-                    <small>
-                      {entry.kind === "directory"
-                        ? "文件夹"
-                        : entry.kind === "unsupported"
-                          ? "不支持的条目"
-                          : "文件"}
-                    </small>
-                  </span>
-                  <span>
-                    <small>{formatBrowserBytes(entry.bytes)}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="empty-state">
-              {browser.loading ? "正在读取…" : "此目录没有可浏览的条目。"}
-            </p>
-          )}
-          <div className="action-row">
-            <button
-              disabled={browser.loading || !browser.canPreviousPage}
-              onClick={() => void browser.previousPage()}
-            >
-              上一页
-            </button>
-            <button
-              disabled={browser.loading || browser.listing?.next_offset == null}
-              onClick={() => void browser.nextPage()}
-            >
-              下一页
-            </button>
-            {browser.listing && (
-              <span className="muted">
-                {browser.listing.total === null
-                  ? "总条目数未知"
-                  : `共 ${browser.listing.total} 个条目`}
-              </span>
-            )}
-          </div>
-          {browser.listing?.partial && (
-            <p className="hint">目录扫描未完成，当前列表仅包含部分条目。</p>
-          )}
-          {browser.listing?.warnings.map((warning, index) => (
-            <p className="hint" key={index}>
-              {warning}
-            </p>
-          ))}
-        </>
-      )}
-    </section>
-  );
-}
 
 function FilePreview({
   browser,
@@ -138,7 +25,7 @@ function FilePreview({
   if (!entry)
     return (
       <section className="panel">
-        <p className="muted">选择文件查看内容或加载音频。</p>
+        {browser.activeEntry?.kind === "directory" ? <><h2>文件夹</h2><p><code>{browser.activeEntry.path}</code></p></> : <p className="muted">选择文件查看内容或加载音频。</p>}
       </section>
     );
   const kind = browserFileKind(entry);
@@ -166,6 +53,7 @@ function FilePreview({
           <button
             disabled={
               browser.audioLoading ||
+              browser.mutating ||
               (entry.bytes !== null && entry.bytes > AUDIO_PREVIEW_LIMIT)
             }
             onClick={() => void browser.loadAudio()}
@@ -212,6 +100,7 @@ function FilePreview({
               {configuration && (
                 <div className="action-row">
                   <button
+                    disabled={browser.mutating}
                     onClick={() => {
                       if (!browser.preview || browser.preview.truncated) return;
                       const captured = browser.capturePreview();
@@ -239,6 +128,7 @@ function FilePreview({
 export default function WorkspaceBrowserPage(props: WorkspaceBrowserPageProps) {
   return (
     <div className="page-stack workspace-browser">
+      {props.browser.mutating && <p role="status">正在执行文件操作，请稍候…</p>}
       {props.browser.error && (
         <div className="banner error" role="alert">
           {props.browser.error}
@@ -252,6 +142,28 @@ export default function WorkspaceBrowserPage(props: WorkspaceBrowserPageProps) {
           onOpenWorkflow={props.onOpenWorkflow}
         />
       </div>
+      {props.browser.mutationDialog?.operation === "import" && <FileMutationDialog key={props.browser.mutationDialog.dropToken} browser={props.browser} />}
     </div>
   );
+}
+
+function FileMutationDialog({ browser }: { browser: WorkspaceBrowser }) {
+  const dialog = browser.mutationDialog!;
+  const title = "导入外部文件";
+  const modal = useRef<HTMLDialogElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    modal.current?.showModal();
+    return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
+  }, []);
+  return <dialog ref={modal} className="workspace-file-dialog" aria-labelledby="workspace-file-dialog-title" onCancel={event => { event.preventDefault(); browser.cancelMutation(); }}>
+    <form onSubmit={event => { event.preventDefault(); void browser.submitMutation(""); }}>
+      <h2 id="workspace-file-dialog-title">{title}</h2>
+      <p>{dialog.space === "user" ? "用户工作区" : "AI 工作区"} · <code>{dialog.path || "/"}</code></p>
+      <p>复制到此目录，原文件保留，不覆盖已有文件。</p><ul>{(dialog.names ?? []).map((name, i) => <li key={i}>{name}</li>)}</ul>
+      {browser.error && <p className="banner error" role="alert">{browser.error}</p>}
+      <div className="action-row"><button type="button" disabled={browser.mutating} onClick={browser.cancelMutation}>取消</button><button type="submit" disabled={browser.mutating}>{browser.mutating ? "处理中…" : `确认${title}`}</button></div>
+    </form>
+  </dialog>;
 }

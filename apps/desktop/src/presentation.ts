@@ -1,4 +1,4 @@
-import { createTemplate, type GraphDocument, type TemplateKind } from "./model";
+import type { GraphDocument, TemplateKind } from "./model";
 
 export type PageId =
   | "workbench"
@@ -10,7 +10,7 @@ export const pages: { id: PageId; label: string; description: string }[] = [
   {
     id: "workbench",
     label: "处理工作台",
-    description: "选择音频，用需求或模板准备处理方案。",
+    description: "通过 AI 助手查看节点、编排配置和处理音频。",
   },
   {
     id: "editor",
@@ -54,33 +54,6 @@ export const templateLabels: Record<TemplateKind, string> = {
   stream: "长音频音量调整 · 分块",
   realtime: "实时设备 · 高级",
 };
-
-export type QuickPreset = "wav" | "denoise" | "stream";
-export function preparePreset(
-  kind: QuickPreset,
-  input: string,
-  output: string,
-  gainDb: string,
-) {
-  if (!input.trim() || !output.trim())
-    throw new Error("请填写输入文件和新的输出文件名。");
-  if (input.trim() === output.trim())
-    throw new Error("输出不能与输入同名，请使用新的文件名。");
-  const template = createTemplate(kind);
-  const gain = Number(gainDb);
-  if (
-    kind !== "denoise" &&
-    (!gainDb.trim() || !Number.isFinite(gain) || gain < -24 || gain > 12)
-  ) {
-    throw new Error("增益应在 -24 到 12 dB 之间。");
-  }
-  for (const node of template.graph.nodes) {
-    if (node.id === "input") node.parameters = { path: input.trim() };
-    if (node.id === "output") node.parameters = { path: output.trim() };
-    if (node.id === "gain") node.parameters = { gain_db: gain };
-  }
-  return template;
-}
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);

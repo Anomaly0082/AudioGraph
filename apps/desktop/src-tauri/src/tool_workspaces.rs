@@ -158,12 +158,27 @@ fn relative_parts(path: &str, allow_root: bool) -> Result<Vec<&str>, String> {
             || part.chars().any(|c| c.is_control() || "<>\"|?*".contains(c)) {
             return Err("Invalid relative path component".into());
         }
-        let stem = part.split('.').next().unwrap_or("").to_ascii_uppercase();
-        if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9") {
+        // Win32 device aliases also recognize superscript digits and spaces before an extension.
+        let stem = part.split('.').next().unwrap_or("").trim_end_matches(' ').to_ascii_uppercase();
+        if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "COM¹" | "COM²" | "COM³" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9" | "LPT¹" | "LPT²" | "LPT³") {
             return Err("Reserved path component".into());
         }
     }
     Ok(parts)
+}
+
+#[cfg(test)]
+mod reserved_name_review_tests {
+    use super::relative_parts;
+    #[test]
+    fn rejects_windows_device_aliases_with_extensions_and_superscript_digits() {
+        for name in ["COM¹", "com².txt", "COM³.tar.gz", "LPT¹", "lpt².txt", "LPT³.wav", "CON .txt", "NUL  .wav", "aux .json"] {
+            assert!(relative_parts(name,false).is_err(),"accepted reserved alias {name}");
+        }
+        for name in ["中文音频.wav", "输入/输出结果.json", "COM10.txt", "com¹-not-device.txt", "普通 文件.wav"] {
+            assert!(relative_parts(name,false).is_ok(),"rejected ordinary name {name}");
+        }
+    }
 }
 
 fn exact_args<'a>(args: &'a Value, required: &[&str], optional: &[&str]) -> Result<&'a Map<String, Value>, String> {

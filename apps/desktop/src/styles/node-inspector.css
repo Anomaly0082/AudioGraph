@@ -44,11 +44,11 @@
 .inspector-field-head label,
 .inspector-field > span {
   font-size: 12px;
-  color: #d6e1f2;
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 .inspector-required {
-  color: #ffb5ae;
+  color: var(--danger);
 }
 .inspector-field-edit {
   display: flex;
@@ -78,7 +78,7 @@
 .inspector-error {
   display: block;
   margin-top: 5px;
-  color: #ffb5ae;
+  color: var(--danger);
 }
 .inspector-refresh {
   font-size: 11px;
@@ -97,9 +97,9 @@
 .inspector-readonly {
   margin: 6px 0 0;
   padding: 9px;
-  border: 1px solid #34435b;
+  border: 1px solid var(--line);
   border-radius: 5px;
-  background: #0d1624;
+  background: var(--surface);
   font-size: 11px;
   overflow: auto;
 }

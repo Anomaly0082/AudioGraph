@@ -7,6 +7,8 @@
 @import "./styles/experiments.css";
 @import "./styles/agent-tools.css";
 @import "./styles/assistant-markdown.css";
+@import "./styles/workspace-files.css";
+@import "./styles/interaction.css";
 /* Unified run history: compact summaries, opt-in details, no audio copies. */
 .run-layout {
   display: grid;
@@ -53,15 +55,15 @@
   overflow-wrap: anywhere;
 }
 .run-row small {
-  color: var(--muted, #a1b2c8);
+  color: var(--muted);
   font-size: 0.8rem;
 }
 .run-row.selected {
-  border-color: #8aa8df;
-  background: #293e5d;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 .run-children {
-  border-left: 2px solid #385170;
+  border-left: 2px solid var(--line);
   margin-left: 0.65rem;
   padding-left: 0.65rem;
   display: grid;
@@ -69,7 +71,7 @@
 }
 .run-detail {
   min-width: 0;
-  border-left: 1px solid #35445a;
+  border-left: 1px solid var(--line);
   padding-left: 1.25rem;
 }
 .workspace-browser .panel {
@@ -97,7 +99,7 @@
   display: grid;
   gap: 0.4rem;
   padding: 0.8rem;
-  border: 1px solid #35445a;
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 @media (max-width: 1100px) {
@@ -106,7 +108,7 @@
   }
   .run-detail {
     border-left: 0;
-    border-top: 1px solid #35445a;
+    border-top: 1px solid var(--line);
     padding: 1rem 0 0;
   }
 }

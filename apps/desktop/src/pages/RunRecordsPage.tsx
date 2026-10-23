@@ -1,3 +1,4 @@
+import { History, RefreshCw, Square, FileCheck } from "lucide-react";
 import Disclosure from "../components/Disclosure";
 import type { RunRecords } from "../hooks/useRunRecords";
 import {
@@ -69,7 +70,7 @@ export default function RunRecordsPage({
             disabled={currentTask!.busy || state === "cancelling"}
             onClick={currentTask!.onStop}
           >
-            {state === "cancelling" ? "正在停止…" : "停止"}
+            <Square className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />{state === "cancelling" ? "正在停止…" : "停止"}
           </button>
         )}
       </div>
@@ -79,13 +80,13 @@ export default function RunRecordsPage({
     <div className="page-stack">
       <section className="panel">
         <div className="section-heading">
-          <h2>运行记录</h2>
+          <h2><History className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />运行记录</h2>
           <div className="action-row">
             <button
               onClick={() => void runs.refresh()}
               disabled={!connected || runs.loading}
             >
-              {runs.loading ? "刷新中…" : "刷新"}
+              <RefreshCw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />{runs.loading ? "刷新中…" : "刷新"}
             </button>
           </div>
         </div>
@@ -169,7 +170,7 @@ export default function RunRecordsPage({
                         }
                         onClick={() => void runs.checkFiles()}
                       >
-                        {runs.checking ? "检查中…" : "检查文件状态"}
+                        <FileCheck className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />{runs.checking ? "检查中…" : "检查文件状态"}
                       </button>
                       <div className="run-files">
                         {record.files.map((file, index) => {

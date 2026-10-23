@@ -12,8 +12,8 @@
   flex-direction: column;
   gap: 32px;
   padding: 29px 17px 20px;
-  border-right: 1px solid #263145;
-  background: #101722;
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
 }
 .brand {
   display: flex;
@@ -23,12 +23,13 @@
 }
 .brand-symbol {
   display: grid;
+  flex-shrink: 0;
   place-items: center;
   width: 35px;
   height: 37px;
-  border: 1px solid #5878ae;
-  background: #20334f;
-  color: #c0d2ff;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
   border-radius: 9px;
   font-size: 13px;
   font-weight: 700;
@@ -54,36 +55,45 @@
   background: transparent;
   border-color: transparent;
   padding: 13px 12px;
-  color: #a5b4ca;
+  color: var(--muted);
 }
 .nav-link.active {
-  background: #253753;
-  border-color: #456189;
-  color: #f0f5ff;
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+.nav-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .nav-index {
-  color: #7e96bb;
+  color: var(--muted);
   font:
     10px Consolas,
     monospace;
 }
 .sidebar-note {
   margin-top: auto;
-  border-top: 1px solid #2b384e;
+  border-top: 1px solid var(--line);
   padding: 20px 7px 0;
 }
 .sidebar-note strong {
-  color: #a9bddc;
+  color: var(--muted);
   font-size: 12px;
 }
 .sidebar-note p {
   margin-top: 7px;
   font-size: 11px;
-  color: #7f92af;
+  color: var(--muted);
   line-height: 1.8;
 }
 .sidebar-footer {
-  color: #627795;
+  color: var(--muted);
   font-size: 10px;
   padding-left: 7px;
 }
@@ -110,16 +120,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.topbar-status {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.topbar > div, .workspace-switch { flex-shrink: 0; }
+.app-shell-notices:empty { display: none; }
 .status-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #75829a;
+  background: #8994a4;
   flex-shrink: 0;
 }
 .status-dot.connected {
-  background: #7cd9b5;
+  background: var(--success);
 }
 .page-stack {
   display: grid;
@@ -149,11 +172,11 @@
   flex-wrap: wrap;
   gap: 12px;
   padding: 13px 16px;
-  border: 1px solid #526f99;
+  border: 1px solid var(--accent-line);
   border-radius: 9px;
   margin-top: 20px;
-  background: #1b2d46;
-  box-shadow: 0 6px 25px #0006;
+  background: var(--accent-soft);
+  box-shadow: 0 4px 18px #2631430a;
   font-size: 12px;
 }
 .global-activity > span:nth-child(2) {
@@ -164,10 +187,12 @@
   height: 8px;
   display: inline-block;
   border-radius: 50%;
-  background: #90b3ff;
+  background: var(--accent);
   flex-shrink: 0;
 }
 @media (max-width: 1150px) {
+  .brand { padding-inline: 0; gap: 8px; }
+  .brand strong { font-size: 16px; }
   .app-layout {
     grid-template-columns: 175px minmax(0, 1fr);
   }
@@ -187,7 +212,7 @@
     height: auto;
     padding: 14px 20px;
     border-right: 0;
-    border-bottom: 1px solid #263145;
+    border-bottom: 1px solid var(--line);
     gap: 14px;
   }
   .app-sidebar nav {
@@ -216,6 +241,8 @@
   }
 }
 @media (max-width: 640px) {
+  .nav-icon { display: none; }
+  .nav-link { font-size: 11px; padding-inline: 2px; }
   .topbar {
     flex-direction: column;
   }
@@ -234,4 +261,80 @@
   .nav-index {
     display: none;
   }
+}
+
+/* The workbench owns one viewport; only messages and bounded auxiliary panels scroll. */
+.app-layout-workbench {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+.app-layout-workbench .app-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 16px 22px;
+}
+.app-layout-workbench .topbar {
+  flex-shrink: 0;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 14px;
+}
+.app-layout-workbench .topbar h1 { font-size: 23px; }
+.app-layout-workbench #page-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.app-layout-workbench .app-shell-notices {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(30dvh, 260px);
+  overflow: auto;
+}
+.app-layout-workbench .global-activity {
+  position: static;
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding: 7px 12px;
+  max-height: 20dvh;
+  overflow: auto;
+}
+@media (max-height: 720px) {
+  .app-layout-workbench .app-shell-notices { max-height: 40px; }
+  .app-layout-workbench .global-activity { max-height: 36px; padding: 4px 8px; gap: 6px; }
+  .app-layout-workbench .global-activity button { padding: 3px 6px; font-size: 11px; }
+  .app-layout-workbench .agent-spaces > .disclosure-content { max-height: 40px; }
+  .app-layout-workbench .agent-alerts { max-height: 48px; }
+}
+/* Explicitly opened workspace controls need room; do not squeeze them into a status strip. */
+.app-layout-workbench .app-shell-notices.notices-expanded {
+  position: absolute;
+  z-index: 10;
+  top: 64px;
+  left: 22px;
+  right: 22px;
+  max-height: calc(100% - 84px);
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px #26314326;
+}
+.app-layout-workbench .notices-expanded .workspace-panel { margin-bottom: 0; }
+@media (max-width: 900px) {
+  .app-layout-workbench { display: flex; flex-direction: column; }
+  .app-layout-workbench .app-sidebar { flex-shrink: 0; align-self: stretch; padding: 10px 16px; gap: 8px; }
+  .app-layout-workbench .app-content { flex: 1; height: auto; padding: 12px 16px; }
+}
+@media (max-width: 640px) {
+  .app-layout-workbench .topbar { flex-direction: row; flex-wrap: wrap; gap: 6px 12px; }
+  .app-layout-workbench .topbar h1 { font-size: 19px; }
+  .app-layout-workbench .workspace-switch { margin-left: auto; max-width: 55%; }
+  .app-layout-workbench .topbar-status { order: 3; flex-basis: 100%; }
+  .app-layout-workbench .app-content { padding: 8px; }
+  .app-layout-workbench .app-shell-notices.notices-expanded { top: 84px; left: 8px; right: 8px; max-height: calc(100% - 96px); }
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderWithoutDecorativeIcons as renderToStaticMarkup } from "./markup-helpers.mjs";
 const require = createRequire(import.meta.url);
 const {
   parseConversation,
@@ -14,6 +14,8 @@ const {
 } = require("../../../build/desktop-model-tests/conversation-model.js");
 const Panel =
   require("../../../build/desktop-model-tests/components/AgentToolsPanel.js").default;
+const TurnView =
+  require("../../../build/desktop-model-tests/components/ConversationTurnView.js").default;
 const id = "a".repeat(64),
   runId = "b".repeat(64),
   noop = () => {};
@@ -196,6 +198,85 @@ test("persistent conversation UI offers selection/new/read-history and clearly s
       onSettings: noop,
     }),
   );
-  assert.match(busy, /aria-label="选择AI会话" disabled=""/);
+  assert.match(busy, /aria-label="选择AI会话"[^>]*disabled=""/);
   assert.match(busy, /disabled="">新建会话/);
+  const longTitle = "C:/AAAProject/AudioProcess/apps/desktop/src/components/ConversationTurnView.tsx";
+  const titled = renderToStaticMarkup(React.createElement(Panel, {
+    agent: { ...agent, conversations: [{ ...summary, title: longTitle }] },
+    blocked: false, onSend: noop, onApplyGraph: noop, onSettings: noop,
+  }));
+  assert(titled.includes(`title="${longTitle}"`), "complete original title remains available");
+  const option = titled.match(/<option[^>]*title="C:\/AAAProject[^>]*>([^<]+)<\/option>/)?.[1];
+  assert(option?.includes("…"), "long title is visibly shortened without a generated summary");
+  assert(!option?.startsWith("Workflow ·"), "mode is not repeated in the conversation title");
+});
+
+const renderTurn = (changes = {}, props = {}) => renderToStaticMarkup(
+  React.createElement(TurnView, {
+    turn: {
+      ...turn,
+      state: "completed",
+      reply: { text: "**Reply**", model_calls: 1, tool_calls: 0, events: [] },
+      ...changes,
+    },
+    mode: "workflow",
+    busy: false,
+    blocked: false,
+    stopping: false,
+    onApplyGraph: noop,
+    ...props,
+  }),
+);
+
+test("chat keeps user text literal and escaped while formatting only assistant content", () => {
+  const longText = "very-long-path/".repeat(300);
+  const html = renderTurn({ prompt: `**literal** <script>unsafe()</script> ${longText}` });
+  assert.match(html, /class="[^"]*agent-user\b/);
+  assert.match(html, /class="[^"]*agent-answer\b/);
+  assert.match(html, /class="[^"]*agent-user\b[^"]*" role="group" aria-label="用户消息"/);
+  assert.match(html, /class="[^"]*agent-assistant\b[^"]*" role="group" aria-label="AI 回复"/);
+  assert.match(html, /\*\*literal\*\* &lt;script&gt;unsafe\(\)&lt;\/script&gt;/);
+  assert.ok(html.includes(longText), "long user messages must not be truncated by rendering");
+  assert.match(html, /<strong>Reply<\/strong>/);
+  assert.doesNotMatch(html, /<script\b|<strong>literal<\/strong>/);
+});
+
+test("chat error and interrupted receipts retain status semantics and safe disclosure content", () => {
+  const html = renderTurn({
+    state: "interrupted",
+    error: "<img onerror=run()>",
+    reply: {
+      text: "",
+      model_calls: 1,
+      tool_calls: 1,
+      omitted_text_bytes: 10,
+      events: [{ kind: "tool", tool: "sample", success: false, text: "<script>event</script>", omitted_bytes: 10 }],
+    },
+  }, { onOpenRun: noop });
+  assert.match(html, /role="status"[^>]*>上次调用已中断|role="status"[^>]*>[\s\S]*?上次调用已中断/);
+  assert.match(html, /role="alert"[^>]*>[\s\S]*?&lt;img onerror=run\(\)&gt;/);
+  assert.match(html, /本轮有工具调用失败/);
+  assert.match(html, /本轮没有文字回复/);
+  assert.match(html, /回复过长，保存的内容已缩短/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.match(html, /查看调用详情/);
+  assert.match(html, /查看未确认的工具调用/);
+  assert.match(html, /查看关联运行记录/);
+  assert.match(html, /&lt;script&gt;event&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script\b|<img\b|<details\b|<summary\b/);
+});
+
+test("generated workflow actions keep permission gating and require an available callback", () => {
+  const event = {
+    kind: "tool", tool: "file_write_text", success: true,
+    arguments: { path: "draft.workflow.json", content: JSON.stringify({ schema_version: 1, inputs: {}, steps: [], outputs: {} }) },
+  };
+  const changes = { reply: { text: "done", model_calls: 1, tool_calls: 1, events: [event] } };
+  for (const props of [{ busy: true }, { blocked: true }]) {
+    const html = renderTurn(changes, { onApplyWorkflow: noop, ...props });
+    assert.match(html, /<button[^>]*disabled=""[^>]*>载入 Workflow 编辑器<\/button>/);
+  }
+  assert.match(renderTurn(changes, { onApplyWorkflow: noop }), /<button>载入 Workflow 编辑器<\/button>/);
+  assert.doesNotMatch(renderTurn(changes), /载入 Workflow 编辑器/);
+  assert.doesNotMatch(renderTurn({ reply: { ...changes.reply, events: [{ ...event, success: false }] } }, { onApplyWorkflow: noop }), /载入 Workflow 编辑器/);
 });

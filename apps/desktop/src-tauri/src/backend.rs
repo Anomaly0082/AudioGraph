@@ -328,6 +328,21 @@ impl Default for BackendManager {
 }
 
 impl BackendManager {
+    // Pin the selected session for a manual disk operation; reconnect/close waits.
+    pub(crate) fn with_workspace_operation<T>(&self, session_id: &str, action: impl FnOnce(&Path) -> Result<T,String>) -> Result<T,String> {
+        let _lease = self.lifecycle.lock().map_err(|_| "工作区操作锁不可用")?;
+        if self.closing.load(Ordering::Acquire) { return Err("窗口正在关闭".into()); }
+        let root = self.workspace(session_id)?;
+        action(&root)
+    }
+
+    pub(crate) fn native_drop_context(&self) -> Option<(String,PathBuf)> {
+        if self.closing.load(Ordering::Acquire) { return None; }
+        let selected = self.connection.lock().ok()?.clone()?;
+        if !selected.shared.alive.load(Ordering::Acquire) { return None; }
+        Some((selected.shared.session_id.clone(), selected.workspace.clone()))
+    }
+
     pub(crate) fn configure_plugin_snapshot(&self,snapshot: Result<Arc<PluginSnapshot>,String>) -> Result<(),String> {
         let _operation = self.lifecycle.lock().unwrap();
         let mut current = self.plugins.lock().unwrap();

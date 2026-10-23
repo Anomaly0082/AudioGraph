@@ -1,6 +1,6 @@
 .assistant-markdown {
   min-width: 0;
-  line-height: 1.8;
+  line-height: 1.75;
   overflow-wrap: anywhere;
 }
 .assistant-markdown > :first-child {
@@ -10,7 +10,7 @@
   margin-bottom: 0;
 }
 .assistant-markdown p {
-  margin: 0 0 12px;
+  margin: 0 0 10px;
 }
 .assistant-markdown h1,
 .assistant-markdown h2,
@@ -19,7 +19,7 @@
 .assistant-markdown h5,
 .assistant-markdown h6 {
   margin: 18px 0 9px;
-  color: var(--text, #e4ebf5);
+  color: var(--text, #263143);
   line-height: 1.5;
 }
 .assistant-markdown h1 {
@@ -50,7 +50,7 @@
 .assistant-markdown blockquote {
   margin: 12px 0;
   padding: 2px 13px;
-  border-left: 3px solid #506a90;
+  border-left: 3px solid #a5b3d7;
   color: var(--muted);
 }
 .assistant-markdown pre {
@@ -58,7 +58,7 @@
   overflow: auto;
   white-space: pre;
   overflow-wrap: normal;
-  background: #0a1320;
+  background: var(--surface-subtle, #f7f8fa);
   border: 1px solid var(--line);
   border-radius: 7px;
   padding: 12px 14px;
@@ -66,12 +66,12 @@
   line-height: 1.65;
 }
 .assistant-markdown :not(pre) > code {
-  background: #253449;
+  background: #edf0f6;
   border-radius: 4px;
   padding: 2px 5px;
 }
 .assistant-markdown pre code {
-  color: #cfdef4;
+  color: #33445d;
   font-size: 12px;
 }
 .assistant-markdown a {
@@ -101,7 +101,7 @@
   text-align: left;
 }
 .markdown-table th {
-  background: #223047;
+  background: #f0f3f8;
 }
 .markdown-image-note {
   color: var(--muted);

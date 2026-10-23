@@ -1,3 +1,4 @@
+import { AudioLines } from "lucide-react";
 import type { AiSettings } from "../hooks/useAiSettings";
 import type { AudioSession } from "../hooks/useAudioSession";
 import type { PluginManager } from "../hooks/usePluginManager";
@@ -27,7 +28,7 @@ export default function SettingsPage({
       />
       <section className="panel">
         <div className="section-heading">
-          <h2>设备访问</h2>
+          <h2><AudioLines className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />设备访问</h2>
           <span className="badge">只影响实时任务</span>
         </div>
         <p className="hint top-hint">

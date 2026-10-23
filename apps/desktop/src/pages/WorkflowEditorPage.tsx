@@ -1,3 +1,4 @@
+import { Workflow, FolderOpen, Save, SaveAll, RotateCcw, ShieldCheck, Play, Square, History } from "lucide-react";
 import type { WorkflowEditor } from "../hooks/useWorkflowEditor";
 import {
   workflowRunStateLabels,
@@ -30,7 +31,7 @@ export default function WorkflowEditorPage({
   return (
     <section className="panel workflow-editor">
       <div className="section-heading">
-        <h2>Workflow</h2>
+        <h2><Workflow className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />Workflow</h2>
         <span className={`badge ${editor.validationCurrent ? "good" : ""}`}>
           {editor.validationCurrent ? "已通过校验" : "待校验"}
         </span>
@@ -64,18 +65,22 @@ export default function WorkflowEditorPage({
           disabled={unavailable || !editor.path.trim()}
           onClick={() => void editor.load()}
         >
+          <FolderOpen className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           打开 JSON
         </button>
         <button
           disabled={unavailable}
           onClick={() => void editor.save()}
         >
+          <Save className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           保存
         </button>
         <button disabled={unavailable} onClick={() => void editor.saveAs()}>
+          <SaveAll className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           另存为
         </button>
         <button disabled={editor.busy} onClick={() => void editor.resetBlank()}>
+          <RotateCcw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           恢复空白
         </button>
       </div>
@@ -91,6 +96,7 @@ export default function WorkflowEditorPage({
       />
       <div className="action-row">
         <button disabled={unavailable} onClick={() => void editor.validate()}>
+          <ShieldCheck className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           校验
         </button>
         <button
@@ -98,6 +104,7 @@ export default function WorkflowEditorPage({
           disabled={unavailable || !editor.validationCurrent}
           onClick={() => void editor.run()}
         >
+          <Play className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           运行 Workflow
         </button>
         {(editor.action === "running" || editor.action === "stopping") && (
@@ -105,11 +112,13 @@ export default function WorkflowEditorPage({
             disabled={editor.action === "stopping"}
             onClick={() => void editor.stop()}
           >
+            <Square className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             停止
           </button>
         )}
         {editor.lastRunId && (
           <button onClick={() => onOpenRun(editor.lastRunId!)}>
+            <History className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             查看运行记录
           </button>
         )}

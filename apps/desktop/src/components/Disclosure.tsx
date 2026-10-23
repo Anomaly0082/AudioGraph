@@ -1,4 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { Minus, Plus } from "lucide-react";
 
 // A real button replaces native details/summary. Keep children mounted so hiding
 // an editor or a form does not discard unsaved input or restart its controller.
@@ -29,6 +30,7 @@ export default function Disclosure({
         aria-controls={id}
         onClick={() => setExpanded((value) => !value)}
       >
+        {expanded ? <Minus className="ui-icon" size={14} strokeWidth={1.65} aria-hidden="true" /> : <Plus className="ui-icon" size={14} strokeWidth={1.65} aria-hidden="true" />}
         {expanded ? `收起${label}` : `查看${label}`}
       </button>
       <div id={id} className="disclosure-content" hidden={!expanded}>

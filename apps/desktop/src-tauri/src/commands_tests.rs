@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn manual_files_review_running_and_uncertain_sessions_fail_closed() {
+    let tracker=ManualRunTracker::default();
+    tracker.tasks.lock().unwrap().insert(("running".into(),"task".into()),PendingRun{id:"record".into(),outputs:vec![]});
+    tracker.uncertain_starts.lock().unwrap().insert("uncertain".into());
+    for session in ["running","uncertain"] {
+        let called=std::cell::Cell::new(false);
+        assert!(tracker.with_files_idle(session,||{called.set(true);Ok(())}).is_err());
+        assert!(!called.get(),"blocked session executed disk action");
+    }
+    assert_eq!(tracker.with_files_idle("unrelated",||Ok(42)).unwrap(),42);
+}
+
+#[test]
+fn manual_files_review_start_lease_blocks_mutation_until_task_registration() {
+    use std::sync::mpsc;
+    let tracker=Arc::new(ManualRunTracker::default());
+    // This is the same lease held across the actual tasks.start RPC and registration.
+    let start=tracker.operations.lock().unwrap();
+    let (ready_tx,ready_rx)=mpsc::channel();let (result_tx,result_rx)=mpsc::channel();
+    let child=tracker.clone();
+    let worker=std::thread::spawn(move||{
+        ready_tx.send(()).unwrap();
+        let result=child.with_files_idle("session",||Ok("disk action executed"));
+        result_tx.send(result).unwrap();
+    });
+    ready_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    assert!(result_rx.recv_timeout(std::time::Duration::from_millis(40)).is_err());
+    tracker.tasks.lock().unwrap().insert(("session".into(),"task".into()),PendingRun{id:"record".into(),outputs:vec![]});
+    drop(start);
+    assert!(result_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap().is_err());
+    worker.join().unwrap();
+}
+
+#[test]
+fn manual_files_review_mutation_lease_blocks_task_start() {
+    use std::sync::mpsc;
+    let tracker=Arc::new(ManualRunTracker::default());
+    let (entered_tx,entered_rx)=mpsc::channel();let (release_tx,release_rx)=mpsc::channel();
+    let child=tracker.clone();
+    let worker=std::thread::spawn(move||child.with_files_idle("session",||{
+        entered_tx.send(()).unwrap();release_rx.recv().unwrap();Ok(())
+    }).unwrap());
+    entered_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    assert!(tracker.operations.try_lock().is_err(),"tasks.start could overlap active mutation");
+    release_tx.send(()).unwrap();worker.join().unwrap();
+    assert!(tracker.operations.try_lock().is_ok());
+}
+
+#[test]
 fn terminal_recording_result_requires_matching_task_and_success_payload() {
     for result in [json!(null),json!({"outputs":{}})] {
         let response = json!({"success":true,"data":{"task_id":"task-1","state":"succeeded","result":result}});

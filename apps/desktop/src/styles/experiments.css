@@ -53,7 +53,7 @@
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px;
-  background: #101a28;
+  background: var(--surface-subtle);
 }
 .experiment-candidate dl > div {
   display: flex;

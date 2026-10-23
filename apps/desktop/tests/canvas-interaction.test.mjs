@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderWithoutDecorativeIcons as renderToStaticMarkup } from "./markup-helpers.mjs";
 
 const require = createRequire(import.meta.url);
 const { panAfterDrag, screenToCanvas, zoomAround, wirePath, portColor } =
@@ -36,7 +37,31 @@ test("wire geometry remains smooth when a target is left of its source", () => {
 test("socket colors are stable by port type", () => {
   assert.equal(portColor("Audio"), portColor("AudioBlock"));
   assert.notEqual(portColor("Audio"), portColor("Boolean"));
-  assert.equal(portColor("unrecognized"), "#9fa9b7");
+  assert.equal(portColor("unrecognized"), "#708197");
+});
+
+test("socket types retain distinct colors and readable contrast on light graph surfaces", () => {
+  const base = readFileSync(new URL("../src/styles/base.css", import.meta.url), "utf8");
+  const graph = readFileSync(new URL("../src/styles/graph-editor.css", import.meta.url), "utf8");
+  assert.match(graph, /\.graph-canvas\s*\{[^}]*background:\s*var\(--surface-subtle\)/);
+  const canvasBackground = base.match(/--surface-subtle:\s*(#[\da-f]{6})/i)?.[1];
+  assert.ok(canvasBackground, "canvas surface token must be defined");
+  const luminance = (hex) => {
+    const rgb = hex.slice(1).match(/../g).map((channel) => parseInt(channel, 16) / 255)
+      .map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+    return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+  };
+  const types = ["Audio", "Text", "FilePath", "Number", "Boolean", "unrecognized"];
+  assert.equal(new Set(types.map(portColor)).size, types.length);
+  assert.equal(portColor("AudioStream"), portColor("Audio"));
+  assert.equal(portColor("file_path"), portColor("FilePath"));
+  for (const type of types) {
+    for (const background of ["#ffffff", canvasBackground]) {
+      const levels = [luminance(portColor(type)), luminance(background)].sort((a, b) => b - a);
+      const contrast = (levels[0] + 0.05) / (levels[1] + 0.05);
+      assert.ok(contrast >= 3, `${type} contrast ${contrast.toFixed(2)} on ${background} must be at least 3:1`);
+    }
+  }
 });
 
 test("canvas renders colored socket wires and camera transform", () => {
@@ -56,8 +81,8 @@ test("canvas renders colored socket wires and camera transform", () => {
     onView: () => {}, onConnect: () => {}, onDisconnect: () => {},
   }));
   assert.match(html, /transform:translate\(-30px, 40px\) scale\(1\.25\)/);
-  assert.match(html, /--wire-color:#e4c467/);
-  assert.match(html, /--socket-color:#e4c467/);
+  assert.match(html, /--wire-color:#a57525/);
+  assert.match(html, /--socket-color:#a57525/);
   assert.match(html, /class="edge-line" d="M /);
   assert.doesNotMatch(html, /marker-end=/);
   assert.match(html, /画布，中键拖动平移/);

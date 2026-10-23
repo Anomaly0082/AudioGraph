@@ -5,20 +5,21 @@ import {
   invokeDesktop,
 } from "./api/desktop";
 import { canCancel, formatError, parseGraph } from "./model";
-import { preparePreset, stateLabels, type PageId } from "./presentation";
+import { stateLabels, type PageId } from "./presentation";
 import { useAudioSession } from "./hooks/useAudioSession";
 import { useGraphDraft } from "./hooks/useGraphDraft";
 import { useAiSettings } from "./hooks/useAiSettings";
-import { useAudioInput } from "./hooks/useAudioInput";
 import { useAgentTools } from "./hooks/useAgentTools";
 import { useRunRecords } from "./hooks/useRunRecords";
 import { useWorkflowEditor } from "./hooks/useWorkflowEditor";
 import { useWorkspaceBrowser } from "./hooks/useWorkspaceBrowser";
 import { usePluginManager } from "./hooks/usePluginManager";
 import { useSessionState } from "./hooks/useSessionState";
+import { workspaceRelativeSavePath } from "./editor-source-model";
+import type { BrowserSpace } from "./workspace-browser-model";
 import AppShell from "./components/AppShell";
 import WorkspacePanel from "./components/WorkspacePanel";
-import WorkbenchPage, { type WorkbenchSetup } from "./pages/WorkbenchPage";
+import WorkbenchPage from "./pages/WorkbenchPage";
 import EditorPage, { type EditorSelection } from "./pages/EditorPage";
 import RunRecordsPage from "./pages/RunRecordsPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -31,14 +32,8 @@ export default function App() {
   const [page, setPage] = useState<PageId>("workbench");
   const [editorKind, setEditorKind] = useState<"graph" | "workflow">("graph");
   const workflowBusyRef = useRef<() => boolean>(() => false);
+  const fileMutationRef = useRef<() => boolean>(() => false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
-  const [inputPath, setInputPath] = useState("");
-  const [setup, setSetup] = useState<WorkbenchSetup>({
-    approach: "ai",
-    preset: "denoise",
-    output: "processed.wav",
-    gain: "-6",
-  });
   const [selection, setSelection] = useState<EditorSelection>({
     search: "",
   });
@@ -62,6 +57,7 @@ export default function App() {
     settings,
     blocked: () =>
       recoveryBlockedRef.current ||
+      fileMutationRef.current() ||
       workflowBusyRef.current() ||
       viewBusyRef.current ||
       !!session.readBusy() ||
@@ -72,6 +68,7 @@ export default function App() {
     session.connection,
     () =>
       recoveryBlockedRef.current ||
+      fileMutationRef.current() ||
       viewBusyRef.current ||
       agent.readBusy() ||
       !!session.readBusy() ||
@@ -79,7 +76,27 @@ export default function App() {
       !session.desktop,
   );
   workflowBusyRef.current = workflowEditor.readBusy;
-  const files = useWorkspaceBrowser(session.connection, page === "files");
+  const files = useWorkspaceBrowser(session.connection, page === "files", {
+    enabled: session.desktop,
+    blockedReason: () => {
+      if (recoveryBlockedRef.current || viewBusyRef.current) return "当前编辑操作尚未完成，请稍后重试。";
+      if (agent.readBusy() || workflowEditor.readBusy()) return "请先停止或等待 AI / Workflow 完成，再修改文件。";
+      if (session.readBusy() || session.readTaskBlocked()) return "请先停止当前任务并完成收尾，再修改文件。";
+      return null;
+    },
+    protectedPaths: () => {
+      const paths: {space: BrowserSpace; path: string}[] = [];
+      const graphSource = draft.exportSessionState().source;
+      if (draft.modified && graphSource && session.connection) {
+        try { paths.push({space: "user", path: workspaceRelativeSavePath(session.connection.workspace, graphSource.path)}); }
+        catch { /* A stale source outside this workspace cannot be selected here. */ }
+      }
+      const workflowSource = workflowEditor.exportSessionState().source;
+      if (workflowEditor.modified && workflowSource) paths.push({space: workflowSource.space, path: workflowSource.path});
+      return paths;
+    },
+  });
+  fileMutationRef.current = files.readMutating;
   const records = useRunRecords(
     session.connection?.sessionId,
     page === "tasks",
@@ -89,12 +106,6 @@ export default function App() {
       workflowEditor.busy,
     `${session.task?.id ?? ""}:${session.task?.state ?? ""}:${session.task?.released ?? false}:${workflowEditor.lastRunId ?? ""}`,
   );
-  const input = useAudioInput({
-    path: inputPath,
-    setPath: setInputPath,
-    connection: session.connection,
-    inspect: session.inspectAudio,
-  });
   if (session.connection) rememberedWorkspace.current = session.connection.workspace;
   const recovery = useSessionState(session.desktop, () => ({
     schema_version: 1,
@@ -119,13 +130,12 @@ export default function App() {
   });
   recoveryBlockedRef.current = !recovery.ready || recovery.closing;
   const goWorkbench = () => {
-    setSetup((current) => ({ ...current, approach: "ai" }));
     setPage("workbench");
   };
 
   // Dialog/draft operations have their own guard; navigation and reading stay available.
   async function viewAction(action: () => Promise<unknown> | unknown) {
-    if (recoveryBlockedRef.current || viewBusyRef.current) return;
+    if (recoveryBlockedRef.current || viewBusyRef.current || fileMutationRef.current()) return;
     viewBusyRef.current = true;
     setViewBusy(true);
     try {
@@ -138,7 +148,7 @@ export default function App() {
     }
   }
   function sessionAction(action: () => Promise<unknown>) {
-    if (recoveryBlockedRef.current) return;
+    if (recoveryBlockedRef.current || fileMutationRef.current()) return;
     void action().catch((reason) => session.setError(formatError(reason)));
   }
   async function validateDraft() {
@@ -158,30 +168,8 @@ export default function App() {
     });
     if (id) setPage("tasks");
   }
-  async function prepareTemplate() {
-    const value = preparePreset(
-      setup.preset,
-      inputPath,
-      setup.output,
-      setup.gain,
-    );
-    if (
-      !(await confirmDesktop(
-        "将准备好的方案载入编辑器并替换当前草稿？不会立即执行。",
-        "准备 Graph",
-      ))
-    )
-      return;
-    draft.applyProposal({
-      mode: value.mode === "streaming" ? "streaming" : "offline",
-      graph: value.graph,
-      options: value.mode === "streaming" ? { block_frames: 256 } : {},
-    });
-    setEditorKind("graph");
-    setPage("editor");
-    session.setNotice("方案已准备，请查看节点和文件路径，再校验、提交任务。");
-  }
   const submittingLocked =
+    files.mutating ||
     !!session.busy ||
     session.taskBlocked ||
     viewBusy ||
@@ -199,6 +187,8 @@ export default function App() {
       onNavigate={setPage}
       workspace={session.connection?.workspace ?? null}
       onWorkspace={() => setWorkspaceOpen((open) => !open)}
+      noticesExpanded={workspaceOpen}
+      status={session.notice && <span className="topbar-status" role="status" title={session.notice}>{session.notice}</span>}
       notices={
         <>
           {recovery.error && <div className="banner warning" role="alert">{recovery.error}{recovery.disabled && <button onClick={() => void recovery.reset()}>重置恢复文件</button>}</div>}
@@ -210,7 +200,7 @@ export default function App() {
           {workspaceOpen && (
             <WorkspacePanel
               session={session}
-              aiBusy={viewBusy || agent.busy || workflowEditor.busy}
+              aiBusy={viewBusy || agent.busy || workflowEditor.busy || files.mutating}
               onClose={() => setWorkspaceOpen(false)}
               onChoose={() => {
                 if (!viewBusyRef.current && !agent.readBusy() && !workflowEditor.readBusy())
@@ -235,11 +225,6 @@ export default function App() {
               <strong>操作未完成</strong>
               <pre>{session.error}</pre>
               <button onClick={() => session.setError("")}>关闭</button>
-            </div>
-          )}
-          {session.notice && (
-            <div className="banner info" role="status">
-              {session.notice}
             </div>
           )}
           {!workspaceOpen && session.recentWorkspaces.warning && (
@@ -354,12 +339,7 @@ export default function App() {
     >
       {page === "workbench" && (
         <WorkbenchPage
-          input={input}
           connected={!!session.connection}
-          desktop={session.desktop}
-          setup={setup}
-          onSetup={setSetup}
-          onPrepare={() => void viewAction(prepareTemplate)}
           onOpenSettings={() => setPage("settings")}
           onOpenRun={(id) => {
             records.select(id);
@@ -367,6 +347,7 @@ export default function App() {
           }}
           agent={agent}
           agentBlocked={
+            files.mutating ||
             viewBusy ||
             workflowEditor.busy ||
             !!session.busy ||
@@ -444,6 +425,7 @@ export default function App() {
               editor={workflowEditor}
               connected={!!session.connection}
               locked={
+                files.mutating ||
                 viewBusy ||
                 !!session.busy ||
                 session.taskBlocked ||
@@ -462,7 +444,7 @@ export default function App() {
               selection={selection}
               onSelection={setSelection}
               submittingLocked={submittingLocked}
-              fileBusy={viewBusy}
+              fileBusy={viewBusy || files.mutating}
               onValidate={() => void viewAction(validateDraft)}
               onRun={() => void viewAction(runDraft)}
               onLoadTemplate={() => void viewAction(() => draft.loadTemplate())}
@@ -577,8 +559,8 @@ export default function App() {
           settings={settings}
           session={session}
           plugins={plugins}
-          workflowBusy={viewBusy || agent.busy || workflowEditor.busy}
-          onPermissions={(desired) => sessionAction(() => session.applyPermissions(desired, () => viewBusyRef.current || agent.readBusy() || workflowEditor.readBusy()))}
+          workflowBusy={viewBusy || agent.busy || workflowEditor.busy || files.mutating}
+          onPermissions={(desired) => sessionAction(() => session.applyPermissions(desired, () => viewBusyRef.current || agent.readBusy() || workflowEditor.readBusy() || fileMutationRef.current()))}
         />
       )}
     </AppShell>

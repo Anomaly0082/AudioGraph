@@ -1,3 +1,4 @@
+import { FileJson, FolderOpen, Save, SaveAll, ShieldCheck, Play, History, LayoutTemplate, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { GraphDraft } from "../hooks/useGraphDraft";
 import type { AudioSession } from "../hooks/useAudioSession";
@@ -109,7 +110,7 @@ export default function EditorPage({
     <div className="visual-editor">
       <section className="panel">
         <div className="section-heading">
-          <h2>Graph</h2>
+          <h2><FileJson className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />Graph</h2>
           <span className={`badge ${draft.validationCurrent ? "good" : ""}`}>
             {draft.validationCurrent ? "已通过校验" : "待校验"}
           </span>
@@ -132,12 +133,14 @@ export default function EditorPage({
             </select>
           </label>
           <button disabled={fileBusy} onClick={onLoadTemplate}>
+            <LayoutTemplate className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             载入模板
           </button>
           <button
             disabled={!session.desktop || !connection || !!busy || fileBusy}
             onClick={onLoad}
           >
+            <FolderOpen className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             打开 JSON
           </button>
           <button
@@ -150,12 +153,14 @@ export default function EditorPage({
             }
             onClick={onSave}
           >
+            <Save className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             保存
           </button>
           <button
             disabled={!session.desktop || !connection || !!busy || fileBusy || !canSubmitGraph}
             onClick={onSaveAs}
           >
+            <SaveAll className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
             另存为
           </button>
         </div>
@@ -214,6 +219,7 @@ export default function EditorPage({
               disabled={!connection || !!busy || fileBusy || !canSubmitGraph}
               onClick={onValidate}
             >
+              <ShieldCheck className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
               校验
             </button>
             <button
@@ -228,9 +234,10 @@ export default function EditorPage({
               }
               onClick={onRun}
             >
+              <Play className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
               提交任务
             </button>
-            {task && <button onClick={onTasks}>查看运行记录</button>}
+            {task && <button onClick={onTasks}><History className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />查看运行记录</button>}
           </div>
         </div>
         {draft.mode === "realtime" && (
@@ -355,7 +362,7 @@ export default function EditorPage({
           )}
           <section className="panel" aria-labelledby="node-palette-title">
             <div className="section-heading">
-              <h2 id="node-palette-title">添加节点</h2>
+              <h2 id="node-palette-title"><Plus className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />添加节点</h2>
               <span className="badge">{available.length}</span>
             </div>
             <input
@@ -421,7 +428,7 @@ export default function EditorPage({
                     }
                   }}
                 >
-                  <span>＋ {item.displayName}</span>
+                  <span><Plus className="ui-icon" size={16} strokeWidth={1.65} aria-hidden="true" />{item.displayName}</span>
                   <code>{item.typeId}</code>
                 </button>
               ))}

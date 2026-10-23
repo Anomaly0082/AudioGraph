@@ -7,6 +7,7 @@ import {
   type PointerEvent,
 } from "react";
 import type { GraphDocument } from "../model";
+import { LayoutGrid, Minus, Plus, Trash2 } from "lucide-react";
 import type { NodeInfo } from "../types/desktop";
 import {
   autoLayout,
@@ -393,7 +394,7 @@ export default function GraphCanvas({
               title={wiringReason || undefined}
               onClick={removeSelectedEdge}
             >
-              删除连线
+              <Trash2 className="ui-icon" size={16} strokeWidth={1.65} aria-hidden="true" />删除连线
             </button>
           )}
           <button
@@ -408,14 +409,14 @@ export default function GraphCanvas({
               });
             }}
           >
-            整理布局
+            <LayoutGrid className="ui-icon" size={16} strokeWidth={1.65} aria-hidden="true" />整理布局
           </button>
           <button
             aria-label="缩小画布"
             disabled={view.zoom <= 0.5}
             onClick={() => zoomTo(Math.max(0.5, +(view.zoom - 0.1).toFixed(1)))}
           >
-            −
+            <Minus className="ui-icon ui-icon-standalone" size={16} strokeWidth={1.65} aria-hidden="true" />
           </button>
           <button
             aria-label="重置画布视图"
@@ -431,7 +432,7 @@ export default function GraphCanvas({
             disabled={view.zoom >= 1.5}
             onClick={() => zoomTo(Math.min(1.5, +(view.zoom + 0.1).toFixed(1)))}
           >
-            +
+            <Plus className="ui-icon ui-icon-standalone" size={16} strokeWidth={1.65} aria-hidden="true" />
           </button>
         </div>
       </div>

@@ -1,3 +1,4 @@
+import { Trash2, RefreshCw, SlidersHorizontal, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { GraphDocument, GraphNode } from "../model";
 import type { DeviceCatalog, NodeInfo } from "../types/desktop";
@@ -242,6 +243,7 @@ function ParameterField({
               onClick={onListDevices}
               disabled={!canListDevices}
             >
+              <RefreshCw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
               刷新设备列表
             </button>
           )}
@@ -345,13 +347,14 @@ export default function NodeInspector({
           <code>{node.id}</code>
         </div>
         <button type="button" className="danger" onClick={onDelete}>
+          <Trash2 className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           删除节点
         </button>
       </div>
       <small className="inspector-type">{node.type}</small>
 
       <div className="inspector-section">
-        <h3>参数</h3>
+        <h3><SlidersHorizontal className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />参数</h3>
         {descriptor?.parameters?.map((parameter) => (
           <ParameterField
             key={`${node.id}:${parameter.id}`}
@@ -391,7 +394,7 @@ export default function NodeInspector({
       </div>
 
       <div className="inspector-section">
-        <h3>导出</h3>
+        <h3><Upload className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />导出</h3>
         {nodeExports.map(({ item, index }) => (
           <div className="inspector-export" key={index}>
             <span>

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderWithoutDecorativeIcons as renderToStaticMarkup } from "./markup-helpers.mjs";
 const require = createRequire(import.meta.url);
 const Disclosure =
   require("../../../build/desktop-model-tests/components/Disclosure.js").default;

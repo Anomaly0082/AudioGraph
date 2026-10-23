@@ -1,6 +1,22 @@
 import { parseGraph } from "./model";
 
 export type BrowserSpace = "user" | "ai";
+export type BrowserMutationOperation = "mkdir" | "rename" | "copy" | "move" | "trash" | "import";
+export function browserEntryName(value: string): string {
+  if (value.includes("/")) throw new Error("名称不能包含目录分隔符。");
+  return browserMutationTarget(value);
+}
+export function browserMutationTarget(value: string): string {
+  const path = browserRelativePath(value);
+  if (!path || path.split("/").some(part => /[<>"|?*\x00-\x1f]/.test(part) || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(part)))
+    throw new Error("请输入有效的工作区相对路径（使用 / 分隔，不能使用系统保留名称）。");
+  return path;
+}
+export function browserPathContains(parent: string, child: string): boolean {
+  const a = parent.toLowerCase();
+  const b = child.toLowerCase();
+  return a === b || b.startsWith(`${a}/`);
+}
 export type BrowserEntry = {
   name: string;
   path: string;

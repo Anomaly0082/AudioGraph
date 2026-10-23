@@ -10,6 +10,16 @@ import type {
 } from "../types/desktop";
 
 export const desktopAvailable = isTauri;
+export type WorkspaceFileDrop = {
+  kind: "enter" | "over" | "leave" | "drop";
+  token?: string;
+  sessionId?: string;
+  names?: string[];
+  error?: string;
+};
+export function listenWorkspaceFileDrop(callback: (event: WorkspaceFileDrop) => void): Promise<() => void> {
+  return listen<WorkspaceFileDrop>("workspace-file-drop", event => callback(event.payload));
+}
 export function listenSessionClose(callback: (requestId: string) => void): Promise<() => void> {
   return listen<{ requestId: string }>("session-state-close-requested", event => callback(event.payload.requestId));
 }

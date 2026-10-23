@@ -38,17 +38,17 @@ export function portColor(type: string): string {
     case "audio":
     case "audiostream":
     case "audioblock":
-      return "#e4c467";
+      return "#a57525";
     case "text":
-      return "#8acdb1";
+      return "#2e8666";
     case "filepath":
     case "file_path":
-      return "#bba1dc";
+      return "#8962b2";
     case "number":
-      return "#a9bbd2";
+      return "#586f98";
     case "boolean":
-      return "#dd98b7";
+      return "#ad4e7e";
     default:
-      return "#9fa9b7";
+      return "#708197";
   }
 }

@@ -5,8 +5,7 @@ import test from "node:test";
 const require = createRequire(import.meta.url);
 const { cloneSubmission, isCurrentValidationResponse } =
   require("../../../build/desktop-model-tests/workflow-model.js");
-const { createTemplate } = require("../../../build/desktop-model-tests/model.js");
-const { graphConnections, preparePreset, resultFields } =
+const { graphConnections, resultFields } =
   require("../../../build/desktop-model-tests/presentation.js");
 
 function submission() {
@@ -48,39 +47,6 @@ test("task submission captures a deep, immutable copy before later editor change
   assert.equal(captured.options.block_frames, 256);
   assert.throws(() => { captured.graph.nodes[0].parameters.path = "late-edit.wav"; }, TypeError);
   assert.throws(() => { captured.options.block_frames = 128; }, TypeError);
-});
-
-test("all quick presets bind input and output on independent Graph copies", () => {
-  for (const kind of ["wav", "denoise", "stream"]) {
-    const untouched = createTemplate(kind);
-    const before = structuredClone(untouched);
-    const prepared = preparePreset(kind, "  source.wav  ", "  fresh-output.wav  ", "-6");
-    assert.equal(prepared.graph.nodes.find((node) => node.id === "input")?.parameters?.path, "source.wav");
-    assert.equal(prepared.graph.nodes.find((node) => node.id === "output")?.parameters?.path, "fresh-output.wav");
-    if (kind !== "denoise") {
-      assert.equal(prepared.graph.nodes.find((node) => node.id === "gain")?.parameters?.gain_db, -6);
-    }
-    assert.deepEqual(untouched, before, `preparing ${kind} must not mutate an existing template`);
-    assert.notEqual(prepared.graph, untouched.graph);
-    assert.notEqual(createTemplate(kind).graph.nodes.find((node) => node.id === "input")?.parameters?.path,
-      "source.wav", "later template loads must keep their defaults");
-  }
-});
-
-test("quick presets reject same-name output and enforce gain bounds", () => {
-  for (const kind of ["wav", "stream", "denoise"]) {
-    assert.throws(() => preparePreset(kind, " same.wav ", "same.wav", "-6"), /输出不能与输入同名/);
-    assert.throws(() => preparePreset(kind, "", "fresh.wav", "-6"), /请填写输入文件/);
-    assert.throws(() => preparePreset(kind, "in.wav", " ", "-6"), /请填写输入文件/);
-  }
-  for (const kind of ["wav", "stream"]) {
-    for (const gain of ["-24", "12"]) assert.doesNotThrow(() => preparePreset(kind, "in.wav", "out.wav", gain));
-    for (const gain of ["-24.1", "12.1", "", "not-a-number", "Infinity"]) {
-      assert.throws(() => preparePreset(kind, "in.wav", "out.wav", gain), /增益/);
-    }
-  }
-  assert.doesNotThrow(() => preparePreset("denoise", "in.wav", "out.wav", ""),
-    "denoise has no gain control");
 });
 
 test("result summary extracts scalar fields without changing structured backend data", () => {

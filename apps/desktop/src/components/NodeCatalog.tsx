@@ -1,3 +1,4 @@
+import { Blocks } from "lucide-react";
 import type { NodeInfo } from "../types/desktop";
 
 export default function NodeCatalog({
@@ -23,7 +24,7 @@ export default function NodeCatalog({
   return (
     <section className="panel capabilities-panel" aria-labelledby="nodes-title">
       <div className="section-heading">
-        <h2 id="nodes-title">节点目录</h2>
+        <h2 id="nodes-title"><Blocks className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />节点目录</h2>
         <span className="badge">{nodes.length} 个</span>
       </div>
       <input

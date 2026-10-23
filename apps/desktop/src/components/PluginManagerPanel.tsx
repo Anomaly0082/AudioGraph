@@ -1,3 +1,4 @@
+import { Puzzle, FolderPlus, RefreshCw, Trash2 } from "lucide-react";
 import type { PluginManager } from "../hooks/usePluginManager";
 
 type StartupError = { package: string; code: string; message: string };
@@ -15,7 +16,7 @@ export default function PluginManagerPanel({
   return (
     <section className="panel" aria-label="插件管理">
       <div className="section-heading">
-        <h2>本机插件</h2>
+        <h2><Puzzle className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />本机插件</h2>
         {view?.restart_required && <span className="badge">重启后生效</span>}
       </div>
       <p className="hint top-hint">
@@ -27,6 +28,7 @@ export default function PluginManagerPanel({
           disabled={!desktop || manager.busy}
           onClick={() => void manager.install()}
         >
+          <FolderPlus className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           安装本机文件夹…
         </button>
         <button
@@ -34,6 +36,7 @@ export default function PluginManagerPanel({
           disabled={!desktop || manager.busy || manager.loading}
           onClick={() => void manager.refresh()}
         >
+          <RefreshCw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           刷新列表
         </button>
       </div>
@@ -49,7 +52,7 @@ export default function PluginManagerPanel({
           </p>
           {view.entries.length === 0 && <p className="muted">尚未安装插件。</p>}
           {view.entries.map((entry) => (
-            <div className="panel" key={entry.folder}>
+            <div className="panel plugin-entry" key={entry.folder}>
               <div className="section-heading">
                 <h3>{entry.plugin_id ?? entry.folder}</h3>
                 {entry.plugin_version && <span className="badge">{entry.plugin_version}</span>}
@@ -88,6 +91,7 @@ export default function PluginManagerPanel({
                     disabled={!desktop || manager.busy}
                     onClick={() => void manager.uninstall(entry.folder, entry.revision)}
                   >
+                    <Trash2 className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
                     卸载并保留备份
                   </button>
                 </div>
