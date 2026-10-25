@@ -84,6 +84,23 @@ fn explicit_resampling_and_downmix_are_supported_but_incompatible_default_is_rej
 }
 
 #[test]
+fn high_rate_stereo_can_be_explicitly_adapted_for_mp3_without_changing_source() {
+    let f = Fixture::new(); let source = f.wav("high-rate.wav", 96000, 2, 9600);
+    let original = fs::read(&source).unwrap();
+    let options = ConversionOptions { output_format: OutputFormat::Mp3, ..Default::default() };
+    assert!(f.convert("high-rate.wav", "unchanged-rate.mp3", options).unwrap_err().contains("96000"));
+    assert!(!f.spaces.ai_root.join("unchanged-rate.mp3").exists());
+    let result = f.convert("high-rate.wav", "adapted.mp3", ConversionOptions {
+        sample_rate: Some(48000), channels: Some(1), ..options
+    }).unwrap();
+    assert_eq!(result["sample_rate"], 48000);
+    assert_eq!(result["channels"], 1);
+    assert_eq!(result["encoding"], "mp3");
+    assert_eq!(fs::read(&source).unwrap(), original);
+    f.no_stages();
+}
+
+#[test]
 fn rejects_conflicts_paths_links_invalid_options_and_limits_without_publication() {
     let f = Fixture::new(); let source = f.wav("source.wav", 16000, 1, 100);
     fs::write(f.spaces.ai_root.join("existing.wav"), b"preserve").unwrap();

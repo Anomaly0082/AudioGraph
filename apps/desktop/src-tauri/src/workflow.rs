@@ -472,6 +472,7 @@ impl Context {
             },
             _ => expr.clone(),
         };
+        depth(&result, 0, path)?;
         size(&result, MAX_VALUE, path)?;
         Ok(result)
     }
@@ -710,7 +711,9 @@ impl Runner<'_> {
                     ctx.item = old_item;
                     ctx.index = old_index;
                     collected.push(Value::Object(result?));
-                    size(&Value::Array(collected.clone()), MAX_VALUE, path)?;
+                    let collected_value = Value::Array(collected.clone());
+                    depth(&collected_value, 0, path)?;
+                    size(&collected_value, MAX_VALUE, path)?;
                 }
                 Value::Array(collected)
             }
@@ -724,6 +727,7 @@ impl Runner<'_> {
                 json!({"branch": branch, "steps": results})
             }
         };
+        depth(&value, 0, path)?;
         size(&value, MAX_VALUE, path)?;
         self.check(path)?;
         Ok(value)
@@ -813,3 +817,7 @@ mod workflow_value_tests;
 #[cfg(test)]
 #[path = "workflow_selection_tests.rs"]
 mod workflow_selection_tests;
+
+#[cfg(test)]
+#[path = "workflow_runtime_limits_tests.rs"]
+mod workflow_runtime_limits_tests;

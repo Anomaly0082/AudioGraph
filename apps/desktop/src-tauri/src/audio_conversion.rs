@@ -25,6 +25,21 @@ pub(crate) struct ConversionOptions {
     pub output_format: OutputFormat,
 }
 
+impl ConversionOptions {
+    pub(crate) fn validate(&self) -> Result<(),String> {
+        if self.sample_rate.is_some_and(|rate| !(8000..=192000).contains(&rate))
+            || self.channels.is_some_and(|channels| !matches!(channels, 1 | 2)) {
+            return Err("采样率须为 8000–192000，声道数须为 1 或 2".into());
+        }
+        if let Some(rate) = self.sample_rate {
+            if !self.output_format.supports_rate(rate) {
+                return Err(format!("{} 不支持 {} Hz；请选择兼容格式或显式指定兼容采样率", self.output_format.name().to_uppercase(), rate));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum OutputFormat { #[default] Wav, Flac, Mp3, M4a }
@@ -376,10 +391,7 @@ pub(crate) fn convert(spaces: &ToolWorkspaces, source_space: &str, source_path: 
             Err(_) => return Err("转换服务暂不可用，请重启应用".into()),
         }
     };
-    if options.sample_rate.is_some_and(|rate| !(8000..=192000).contains(&rate))
-        || options.channels.is_some_and(|channels| !matches!(channels, 1 | 2)) {
-        return Err("采样率须为 8000–192000，声道数须为 1 或 2".into());
-    }
+    options.validate()?;
     if source_path.is_empty() || path.is_empty() { return Err("请选择源音频和新的目标文件名".into()); }
     let format = demuxer(source_path)?;
     if !Path::new(path).extension().is_some_and(|extension| extension.eq_ignore_ascii_case(options.output_format.name())) {

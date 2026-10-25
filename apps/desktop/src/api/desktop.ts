@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { formatError, type GraphDocument } from "../model";
@@ -10,6 +10,8 @@ import type {
 } from "../types/desktop";
 
 export const desktopAvailable = isTauri;
+export const audioPreviewUrl = (token: string): string => convertFileSrc(token, "audiopreview");
+export const closeAudioPreview = (token: string): Promise<void> => invoke("workspace_audio_close", { token });
 export type WorkspaceFileDrop = {
   kind: "enter" | "over" | "leave" | "drop";
   token?: string;

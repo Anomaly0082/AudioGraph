@@ -50,11 +50,21 @@ export type BrowserSnapshot = Readonly<{
   epoch: number;
 }>;
 
-export const AUDIO_PREVIEW_LIMIT = 32 * 1024 * 1024;
 export const TEXT_PREVIEW_LIMIT = 256 * 1024;
 export const BROWSER_PAGE_SIZE = 100;
 export const audioOutputFormats = ["wav", "flac", "mp3", "m4a"] as const;
 export type AudioOutputFormat = typeof audioOutputFormats[number];
+export type AudioConversionOptions = { sampleRate?: number; channels?: number };
+export const audioConversionSampleRates = [8000, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400, 192000] as const;
+export function validatedAudioConversionOptions(format: AudioOutputFormat, options: AudioConversionOptions = {}): AudioConversionOptions {
+  if (!audioOutputFormats.includes(format)) throw new Error("请选择支持的输出格式。");
+  const { sampleRate, channels } = options;
+  if (sampleRate !== undefined && (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000)) throw new Error("采样率须为 8000 至 192000 Hz 的整数。");
+  if (channels !== undefined && channels !== 1 && channels !== 2) throw new Error("请选择单声道或双声道，或保持原样。");
+  const lossyRates = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
+  if (sampleRate !== undefined && ((format === "mp3" && !lossyRates.includes(sampleRate)) || (format === "m4a" && ![...lossyRates, 64000, 88200, 96000].includes(sampleRate)))) throw new Error(`${format === "mp3" ? "MP3" : "M4A"} 不支持 ${sampleRate} Hz，请重新选择采样率。`);
+  return { ...(sampleRate !== undefined ? { sampleRate } : {}), ...(channels !== undefined ? { channels } : {}) };
+}
 export function replaceConvertedAudioExtension(name: string, format: AudioOutputFormat): string {
   return `${name.replace(/\.[^./\\]+$/, "")}.${format}`;
 }
@@ -221,22 +231,44 @@ type AudioPlayer = Pick<
   HTMLAudioElement,
   "pause" | "removeAttribute" | "load" | "src"
 >;
+export type AudioPreviewSession = { token: string; bytes: number; mime: string };
 type AudioResources = {
-  create: (blob: Blob) => string;
-  revoke: (url: string) => void;
+  url: (token: string) => string;
+  release: (token: string) => void | Promise<void>;
 };
+export function trustedAudioPreviewUrl(value: string): boolean {
+  return /^(?:audiopreview:\/\/localhost|http:\/\/audiopreview\.localhost)\/[a-zA-Z0-9_-]+$/.test(value);
+}
 
 // One owner makes replacement and late-response disposal testable without a
 // browser. It never calls play(): native controls own the user's playback.
 export class AudioPreviewOwner {
   private player: AudioPlayer | null = null;
   private value: string | null = null;
+  private token: string | null = null;
+  private releases = new Set<Promise<void>>();
+  private releaseErrors: unknown[] = [];
   constructor(
-    private resources: AudioResources = {
-      create: (blob) => URL.createObjectURL(blob),
-      revoke: (url) => URL.revokeObjectURL(url),
-    },
+    private resources: AudioResources,
   ) {}
+  private release(token: string) {
+    let result: void | Promise<void>;
+    try { result = this.resources.release(token); } catch (error) { this.releaseErrors.push(error); return; }
+    const pending = Promise.resolve(result).catch(error => {
+      this.releaseErrors.push(error);
+    }).finally(() => { this.releases.delete(pending); });
+    this.releases.add(pending);
+  }
+  // Route cleanup is best effort; mutations explicitly wait for file handles
+  // to close and surface failure before attempting to rename or remove them.
+  async drain(): Promise<void> {
+    while (this.releases.size) await Promise.all(this.releases);
+    if (this.releaseErrors.length) {
+      const error = this.releaseErrors[0];
+      this.releaseErrors = [];
+      throw error;
+    }
+  }
   get url(): string | null {
     return this.value;
   }
@@ -255,24 +287,32 @@ export class AudioPreviewOwner {
   }
   clear() {
     if (this.player) this.unload(this.player);
-    if (this.value) this.resources.revoke(this.value);
+    if (this.token) this.release(this.token);
+    this.token = null;
     this.value = null;
   }
   replace(
-    bytes: ArrayBuffer,
-    mime: string,
+    session: AudioPreviewSession,
     isCurrent: () => boolean,
   ): string | null {
-    if (!isCurrent()) return null;
-    if (!bytes.byteLength || bytes.byteLength > AUDIO_PREVIEW_LIMIT) {
-      throw new Error("音频快照需为非空文件且不超过 32 MiB。");
+    const token = session?.token;
+    if (typeof token !== "string" || !/^[a-zA-Z0-9_-]+$/.test(token)) throw new Error("音频会话无效。");
+    if (!isCurrent()) { this.release(token); return null; }
+    if (!Number.isSafeInteger(session.bytes) || session.bytes <= 0 || !Object.values(audioTypes).includes(session.mime)) {
+      this.release(token);
+      throw new Error("音频会话信息无效。");
     }
+    let url: string;
+    try {
+      url = this.resources.url(token);
+      if (!trustedAudioPreviewUrl(url) || new URL(url).pathname !== `/${token}`) throw new Error("音频地址无效。");
+    } catch (error) { this.release(token); throw error; }
     this.clear();
-    const url = this.resources.create(new Blob([bytes], { type: mime }));
     if (!isCurrent()) {
-      this.resources.revoke(url);
+      this.release(token);
       return null;
     }
+    this.token = token;
     this.value = url;
     return url;
   }

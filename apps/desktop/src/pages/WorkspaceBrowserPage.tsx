@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import DirectoryBrowser from "../components/WorkspaceFileTree";
 import type { WorkspaceBrowser } from "../hooks/useWorkspaceBrowser";
 import {
-  AUDIO_PREVIEW_LIMIT,
+  trustedAudioPreviewUrl,
   browserConfigurationKind,
   browserFileKind,
   formatBrowserBytes,
   audioOutputFormats,
+  audioConversionSampleRates,
+  validatedAudioConversionOptions,
   replaceConvertedAudioExtension,
   type AudioOutputFormat,
 } from "../workspace-browser-model";
@@ -51,14 +53,13 @@ function FilePreview({
       {kind === "audio" ? (
         <>
           <p className="hint">
-            音频按本地文件快照加载，上限 32 MiB；加载后点击播放器播放。
+            加载后点击播放器播放。
           </p>
           <div className="action-row audio-preview-actions">
           <button
             disabled={
               browser.audioLoading ||
-              browser.mutating ||
-              (entry.bytes !== null && entry.bytes > AUDIO_PREVIEW_LIMIT)
+              browser.mutating
             }
             onClick={() => void browser.loadAudio()}
           >
@@ -66,10 +67,7 @@ function FilePreview({
           </button>
           <button disabled={!browser.filesEnabled || browser.mutating} onClick={() => browser.beginConversion(entry)}>格式转换</button>
           </div>
-          {entry.bytes !== null && entry.bytes > AUDIO_PREVIEW_LIMIT && (
-            <p className="hint">文件超过 32 MiB，无法在此加载。</p>
-          )}
-          {browser.audioUrl && (
+          {browser.audioUrl && trustedAudioPreviewUrl(browser.audioUrl) && (
             <div className="action-row">
               <audio
                 ref={browser.audioRef}
@@ -158,6 +156,11 @@ function AudioConversionDialog({ browser }: { browser: WorkspaceBrowser }) {
   const conversion = browser.conversionDialog!;
   const [name, setName] = useState(conversion.outputName);
   const [outputFormat, setOutputFormat] = useState<AudioOutputFormat>(conversion.outputFormat);
+  const [sampleRate, setSampleRate] = useState<number | undefined>(conversion.options?.sampleRate);
+  const [channels, setChannels] = useState<number | undefined>(conversion.options?.channels);
+  const [optionsExpanded, setOptionsExpanded] = useState(!!(conversion.options?.sampleRate || conversion.options?.channels));
+  let optionError = "";
+  try { validatedAudioConversionOptions(outputFormat, { sampleRate, channels }); } catch (error) { optionError = error instanceof Error ? error.message : String(error); }
   const modal = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
@@ -170,16 +173,22 @@ function AudioConversionDialog({ browser }: { browser: WorkspaceBrowser }) {
     return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
   }, []);
   return <dialog ref={modal} className="workspace-file-dialog" aria-labelledby="audio-conversion-title" onCancel={event => { event.preventDefault(); if (!running) void browser.cancelConversion(); }}>
-    <form onSubmit={event => { event.preventDefault(); if (!composing.current) void browser.submitConversion(name, outputFormat); }}>
+    <form onSubmit={event => { event.preventDefault(); if (!composing.current && !optionError) void browser.submitConversion(name, outputFormat, { sampleRate, channels }); }}>
       <h2 id="audio-conversion-title">格式转换</h2>
       <p>{conversion.space === "user" ? "用户工作区" : "AI 工作区"} · <code>{conversion.source.path}</code></p>
       <label>输出格式<select aria-label="输出格式" value={outputFormat} disabled={running} onChange={event => { const format = event.target.value as AudioOutputFormat; setOutputFormat(format); setName(current => replaceConvertedAudioExtension(current, format)); }}>{audioOutputFormats.map(format => <option key={format} value={format}>{format === "m4a" ? "M4A (AAC)" : format.toUpperCase()}</option>)}</select></label>
       <label>新输出文件名<input ref={input} aria-label="新输出文件名" value={name} disabled={running} required autoComplete="off" onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onChange={event => setName(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && (composing.current || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }} /></label>
-      <p className="hint">保留采样率和声道。源文件保留，输出到同一目录，不覆盖已有文件。</p>
+      <button type="button" aria-expanded={optionsExpanded} aria-controls="audio-conversion-options" disabled={running} onClick={() => setOptionsExpanded(current => !current)}>转换选项</button>
+      {optionsExpanded && <div id="audio-conversion-options">
+        <label>采样率<select aria-label="采样率" value={sampleRate ?? ""} disabled={running} onChange={event => setSampleRate(event.target.value === "" ? undefined : Number(event.target.value))}><option value="">保持原样</option>{audioConversionSampleRates.map(rate => <option key={rate} value={rate}>{rate} Hz</option>)}</select></label>
+        <label>声道<select aria-label="声道" value={channels ?? ""} disabled={running} onChange={event => setChannels(event.target.value === "" ? undefined : Number(event.target.value))}><option value="">保持原样</option><option value="1">单声道</option><option value="2">双声道</option></select></label>
+      </div>}
+      <p className="hint">源文件保留，输出到同一目录，不覆盖已有文件。</p>
       {(outputFormat === "mp3" || outputFormat === "m4a") && <p className="hint">MP3/M4A 为有损编码。</p>}
       {running && <p role="status">{cancelling ? "正在取消转换…" : "正在转换…"}</p>}
       {browser.error && <p className="banner error" role="alert">{browser.error}</p>}
-      <div className="action-row"><button type="button" disabled={cancelling} onClick={() => void browser.cancelConversion()}>{cancelling ? "正在取消…" : "取消"}</button><button type="submit" disabled={running}>开始转换</button></div>
+      {optionError && <p className="banner error" role="alert">{optionError}</p>}
+      <div className="action-row"><button type="button" disabled={cancelling} onClick={() => void browser.cancelConversion()}>{cancelling ? "正在取消…" : "取消"}</button><button type="submit" disabled={running || !!optionError}>开始转换</button></div>
     </form>
   </dialog>;
 }

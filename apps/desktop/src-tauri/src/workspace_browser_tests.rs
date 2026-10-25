@@ -84,27 +84,6 @@ fn text_prefix_preserves_utf8_boundary_and_complete_flag_without_executing_json(
 }
 
 #[test]
-fn audio_snapshots_are_bounded_read_only_bytes_and_not_dsp_format_validation() {
-    let (directory,spaces) = fixture();
-    for name in ["test.WAV","test.mp3","test.ogg","test.oga","test.flac","test.m4a","test.aac","test.webm"] {
-        let bytes = b"local snapshot; browser decides whether it can decode";
-        std::fs::write(spaces.user_root.join(name),bytes).unwrap();
-        assert_eq!(preview_audio(&spaces,"user",name).unwrap(),bytes);
-        assert_eq!(std::fs::read(spaces.user_root.join(name)).unwrap(),bytes);
-    }
-    std::fs::write(spaces.user_root.join("not-audio.txt"),"text").unwrap();
-    assert!(preview_audio(&spaces,"user","not-audio.txt").is_err());
-    let large = File::create(spaces.user_root.join("large.wav")).unwrap();
-    large.set_len(AUDIO_LIMIT as u64+1).unwrap();
-    drop(large);
-    assert!(preview_audio(&spaces,"user","large.wav").unwrap_err().contains("32 MiB"));
-    let body = tauri::ipc::IpcResponse::body(tauri::ipc::Response::new(vec![1_u8,2,3])).unwrap();
-    assert!(matches!(body,tauri::ipc::InvokeResponseBody::Raw(bytes) if bytes == vec![1,2,3]));
-    assert!(!directory.join("data").exists());
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
 fn path_and_page_attacks_never_expand_the_workspace() {
     let (directory,spaces) = fixture();
     std::fs::write(directory.join("outside.txt"),"outside").unwrap();

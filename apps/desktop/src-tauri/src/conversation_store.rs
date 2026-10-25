@@ -135,6 +135,12 @@ pub struct ConversationList {
     pub truncated: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ConversationDeleted {
+    pub id: String,
+    pub recoverable: bool,
+}
+
 type ActiveKey = (PathBuf, String, String);
 
 /// The same managed store must serve commands and the runtime. The lock serializes
@@ -154,6 +160,10 @@ pub struct ConversationTurnGuard {
 }
 
 fn storage_dir(spaces: &ToolWorkspaces, app_data: &Path, create: bool) -> Result<PathBuf, String> {
+    scoped_storage_dir(spaces,app_data,"conversations",create)
+}
+
+fn scoped_storage_dir(spaces: &ToolWorkspaces, app_data: &Path, bucket: &str, create: bool) -> Result<PathBuf, String> {
     if !app_data.is_absolute() || app_data.components().any(|p| matches!(p, Component::ParentDir | Component::CurDir)) {
         return Err("App data path must be absolute and normalized".into());
     }
@@ -165,7 +175,7 @@ fn storage_dir(spaces: &ToolWorkspaces, app_data: &Path, create: bool) -> Result
         else { spaces.user_root.to_string_lossy().into_owned() };
     let hash = format!("{:x}", Sha256::digest(identity.as_bytes()));
     let mut dir = app_data;
-    for part in ["conversations", "v1", &hash] {
+    for part in [bucket, "v1", &hash] {
         dir.push(part);
         if create { ensure_dir(&dir)?; } else { check_chain(&dir)?; }
     }
@@ -266,6 +276,45 @@ fn page(mut record: ConversationRecord, before: Option<usize>, limit: Option<usi
 }
 
 impl ConversationStore {
+    pub(crate) fn delete(&self, spaces: &ToolWorkspaces, app_data: &Path, id: &str) -> Result<ConversationDeleted,String> {
+        // Shared with begin_turn/checkpoint/finish: no in-process writer can
+        // recreate the record after deletion or publish a turn while it moves.
+        let active = self.active.lock().map_err(|_| "Conversation store unavailable")?;
+        let dir = storage_dir(spaces,app_data,false)?;
+        let source = record_path(&dir,id)?;
+        if active.iter().any(|(directory,conversation,_)| directory==&dir && conversation==id) {
+            return Err("Conversation already has an active turn".into());
+        }
+        check_chain(&source)?;
+        let metadata = safe_metadata(&source)?.ok_or("Conversation not found")?;
+        if !metadata.is_file() || is_hardlinked(&source,&metadata) { return Err("Conversation is not an independent regular file".into()); }
+        let file = File::open(&source).map_err(|error| format!("Cannot open conversation for deletion: {error}"))?;
+        if !opened_file_within_workspace(&file,&dir) { return Err("Conversation file changed unexpectedly".into()); }
+        // Deliberately do not parse the record: damaged JSON is preserved too.
+        // The trash is outside the directory scanned by conversation_list.
+        let trash = scoped_storage_dir(spaces,app_data,"conversation-trash",true)?;
+        let item = trash.join(format!("{id}-{}-{}",time_ms()?,SERIAL.fetch_add(1,Ordering::Relaxed)));
+        fs::create_dir(&item).map_err(|error| format!("Cannot create conversation trash entry: {error}"))?;
+        let result = (|| {
+            let target = item.join(format!("{id}.json"));
+            check_chain(&source)?; check_chain(&item)?;
+            let current = safe_metadata(&source)?.ok_or("Conversation not found")?;
+            let opened = file.metadata().map_err(|_| "Cannot inspect conversation for deletion")?;
+            if !current.is_file() || is_hardlinked(&source,&current) || current.len()!=metadata.len()
+                || current.modified().ok()!=metadata.modified().ok() || opened.len()!=metadata.len()
+                || opened.modified().ok()!=metadata.modified().ok() || !opened_file_within_workspace(&file,&dir) {
+                return Err("Conversation changed while deleting; refresh and try again".into());
+            }
+            #[cfg(windows)]
+            create_file(&source,&target)?; // atomic move, never replaces a file
+            #[cfg(not(windows))]
+            fs::rename(&source,&target).map_err(|error| format!("Cannot move conversation to internal trash: {error}"))?;
+            Ok(ConversationDeleted {id:id.into(),recoverable:true})
+        })();
+        if result.is_err() { let _ = fs::remove_dir(&item); }
+        result
+    }
+
     pub(crate) fn create(&self, spaces: &ToolWorkspaces, app_data: &Path, mode: &str, title: Option<&str>) -> Result<ConversationDetail, String> {
         if !matches!(mode, "graph" | "workflow") { return Err("Invalid conversation mode".into()); }
         let title = title.unwrap_or("New conversation");

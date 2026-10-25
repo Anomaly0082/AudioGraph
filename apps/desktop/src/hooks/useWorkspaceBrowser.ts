@@ -5,12 +5,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { desktopAvailable, invokeDesktop, listenWorkspaceFileDrop } from "../api/desktop";
+import { audioPreviewUrl, closeAudioPreview, desktopAvailable, invokeDesktop, listenWorkspaceFileDrop } from "../api/desktop";
 import { formatError } from "../model";
 import type { Connection } from "../types/desktop";
 import {
   AudioPreviewOwner,
-  AUDIO_PREVIEW_LIMIT,
+  type AudioPreviewSession,
   BROWSER_PAGE_SIZE,
   audioMime,
   browserFileKind,
@@ -18,6 +18,7 @@ import {
   browserMutationTarget,
   browserEntryName,
   convertedAudioOutputPath,
+  validatedAudioConversionOptions,
   defaultConvertedAudioName,
   browserPathContains,
   matchesBrowserSnapshot,
@@ -29,7 +30,11 @@ import {
   type BrowserTextPreview,
   type BrowserMutationOperation,
   type AudioOutputFormat,
+  type AudioConversionOptions,
 } from "../workspace-browser-model";
+
+// The backend owns one preview per window; preserve ordering across hook remounts.
+let audioOpenQueue: Promise<unknown> = Promise.resolve();
 
 export function useWorkspaceBrowser(
   connection: Connection | null,
@@ -59,7 +64,7 @@ export function useWorkspaceBrowser(
   const [mutationDialog, setMutationDialog] = useState<MutationDialog | null>(null);
   const mutationDialogRef = useRef<MutationDialog | null>(null);
   function showMutation(value: MutationDialog | null) { mutationDialogRef.current = value; setMutationDialog(value); }
-  type ConversionDialog = { source: BrowserEntry; sessionId: string; identity: string; space: BrowserSpace; root: string; outputName: string; outputFormat: AudioOutputFormat };
+  type ConversionDialog = { source: BrowserEntry; sessionId: string; identity: string; space: BrowserSpace; root: string; outputName: string; outputFormat: AudioOutputFormat; options?: AudioConversionOptions };
   const [conversionDialog, setConversionDialog] = useState<ConversionDialog | null>(null);
   const conversionDialogRef = useRef<ConversionDialog | null>(null);
   function showConversion(value: ConversionDialog | null) { conversionDialogRef.current = value; setConversionDialog(value); }
@@ -76,7 +81,7 @@ export function useWorkspaceBrowser(
   const [audioLoading, setAudioLoading] = useState(false);
   const [error, setError] = useState("");
   const ownerRef = useRef<AudioPreviewOwner | null>(null);
-  if (!ownerRef.current) ownerRef.current = new AudioPreviewOwner();
+  if (!ownerRef.current) ownerRef.current = new AudioPreviewOwner({ url: audioPreviewUrl, release: closeAudioPreview });
   const owner = ownerRef.current;
   const mounted = useRef(true);
   const currentConnection = useRef(connection);
@@ -384,28 +389,23 @@ export function useWorkspaceBrowser(
     const mime = audioMime(file.path);
     if (!mime || file.kind !== "file") return false;
     clearAudio();
-    if (file.bytes !== null && file.bytes > AUDIO_PREVIEW_LIMIT) {
-      setError("音频快照仅支持不超过 32 MiB 的文件。");
-      return false;
-    }
     const token = ++audioEpoch.current;
     const isCurrent = () => current(expected) && token === audioEpoch.current;
     audioLoadingRef.current = true;
     setAudioLoading(true);
     setError("");
     try {
-      const bytes = await invokeDesktop<ArrayBuffer>(
-        "workspace_browser_audio",
+      // Serialize opens because the backend replaces the calling window's token.
+      const pending = audioOpenQueue.catch(() => {}).then(() => isCurrent() ? invokeDesktop<AudioPreviewSession>(
+        "workspace_audio_open",
         {
           sessionId: expected.sessionId,
           space: expected.space,
           path: expected.path,
         },
-      );
-      if (!isCurrent()) return false;
-      if (!(bytes instanceof ArrayBuffer))
-        throw new Error("音频返回的二进制格式无效。");
-      const url = owner.replace(bytes, mime, isCurrent);
+      ).then(session => owner.replace(session, isCurrent)) : null);
+      audioOpenQueue = pending;
+      const url = await pending;
       if (!url) return false;
       setAudioUrl(url);
       return true;
@@ -442,7 +442,7 @@ export function useWorkspaceBrowser(
     showMutation(null);
     showConversion({ source: entry, sessionId: session.sessionId, identity: scopeRef.current.identity, space: spaceRef.current, root: pathRef.current, outputName: defaultConvertedAudioName(entry.path), outputFormat: "wav" });
   }
-  async function submitConversion(name: string, outputFormat: AudioOutputFormat = "wav") {
+  async function submitConversion(name: string, outputFormat: AudioOutputFormat = "wav", options: AudioConversionOptions = {}) {
     const dialog = conversionDialogRef.current;
     if (!dialog || !enabled || !visibleRef.current || mutatingRef.current || dialog.identity !== scopeRef.current.identity || dialog.space !== spaceRef.current || dialog.root !== pathRef.current) return;
     let request: { requestId: string; sessionId: string; identity: string; cancelPending: boolean } | null = null;
@@ -452,7 +452,8 @@ export function useWorkspaceBrowser(
       const blocked = optionsRef.current.blockedReason?.();
       if (blocked) throw new Error(blocked);
       const outputPath = convertedAudioOutputPath(dialog.source.path, name, outputFormat);
-      showConversion({ ...dialog, outputName: name, outputFormat });
+      const conversionOptions = validatedAudioConversionOptions(outputFormat, options);
+      showConversion({ ...dialog, outputName: name, outputFormat, options: conversionOptions });
       const requestId = crypto.randomUUID?.() ?? Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
       request = { requestId, sessionId: dialog.sessionId, identity: dialog.identity, cancelPending: false };
       conversionRequest.current = request;
@@ -461,7 +462,7 @@ export function useWorkspaceBrowser(
       setConversionState({ requestId: request.requestId, phase: "running" });
       setError("");
       clearAudio();
-      const reply = await invokeDesktop<{ path?: string; cancelled?: boolean }>("workspace_audio_convert", { sessionId: dialog.sessionId, space: dialog.space, path: dialog.source.path, outputPath, outputFormat, requestId: request.requestId });
+      const reply = await invokeDesktop<{ path?: string; cancelled?: boolean }>("workspace_audio_convert", { sessionId: dialog.sessionId, space: dialog.space, path: dialog.source.path, outputPath, outputFormat, requestId: request.requestId, ...conversionOptions });
       if (!valid()) return;
       if (reply.cancelled) throw new Error("转换已取消。");
       if (!reply.path) throw new Error("音频转换未返回输出文件路径。");
@@ -515,6 +516,17 @@ export function useWorkspaceBrowser(
     if (blocked) { setError(blocked); return; }
     updateClipboard({ entry, operation: cut ? "move" : "copy", identity: scopeRef.current.identity, space: spaceRef.current });
   }
+  async function copyPath(entry: BrowserEntry, relative = false) {
+    const session = currentConnection.current;
+    if (!enabled || !session || !visibleRef.current || mutatingRef.current || entry.kind === "unsupported") return;
+    const scope = scopeRef.current, sourceSpace = spaceRef.current;
+    try {
+      await invokeDesktop("workspace_copy_path", { sessionId: session.sessionId, space: sourceSpace, path: browserRelativePath(entry.path), relative });
+      if (mounted.current && scope === scopeRef.current && visibleRef.current && sourceSpace === spaceRef.current) setError("");
+    } catch (reason) {
+      if (mounted.current && scope === scopeRef.current && visibleRef.current && sourceSpace === spaceRef.current) setError(formatError(reason));
+    }
+  }
   async function paste() {
     const clip = clipboardRef.current, session = currentConnection.current;
     if (!clip || !session || !visibleRef.current || mutatingRef.current || clip.identity !== scopeRef.current.identity || clip.space !== spaceRef.current) return;
@@ -541,6 +553,11 @@ export function useWorkspaceBrowser(
       setMutating(true);
       setError("");
       clearSelection();
+      await audioOpenQueue.catch(() => {});
+      await owner.drain();
+      if (!mounted.current || scope !== scopeRef.current || !visibleRef.current || dialog.sessionId !== currentConnection.current?.sessionId || dialog.directory !== pathRef.current || dialog.space !== spaceRef.current) return;
+      const releaseBlocked = mutationBlocked(dialog.operation, dialog.path, dialog.space);
+      if (releaseBlocked) throw new Error(releaseBlocked);
       invoked = true;
       const reply = await invokeDesktop<{ message?: string; path?: string; paths?: string[] }>("workspace_files_mutate", { sessionId: dialog.sessionId, space: dialog.space, operation: dialog.operation, path: dialog.operation === "mkdir" ? target : dialog.path, ...(target && dialog.operation !== "mkdir" ? { target } : {}), ...(dialog.dropToken ? { dropToken: dialog.dropToken } : {}) });
       if (mounted.current && scope === scopeRef.current && visibleRef.current && dialog.directory === pathRef.current && dialog.space === spaceRef.current) {
@@ -605,6 +622,7 @@ export function useWorkspaceBrowser(
     toggleDirectory,
     clipboard,
     copyEntry,
+    copyPath,
     paste,
     chooseRoot: () => { if (!mutatingRef.current) { setActiveEntry(null); chooseDestination(pathRef.current); } },
     filesEnabled: enabled,

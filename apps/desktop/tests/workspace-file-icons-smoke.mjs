@@ -12,6 +12,7 @@ const output=path.resolve(app,"../../build/workspace-file-icons-review");
 async function styles(file){const text=await fs.readFile(file,"utf8");return(await Promise.all([...text.matchAll(/^@import "([^"]+)";$/gm)].map(m=>styles(path.resolve(path.dirname(file),m[1]))))).join("\n")+text.replace(/^@import "[^"]+";$/gm,"");}
 const mock=`
 export const desktopAvailable=()=>true;export const listenWorkspaceFileDrop=async()=>()=>{};
+export const audioPreviewUrl=token=>'http://audiopreview.localhost/'+token;export const closeAudioPreview=async()=>{};
 const entry=(path,kind='file',bytes=321456)=>({name:path.split('/').pop(),path,kind,bytes:kind==='directory'?null:bytes,modified_at_ms:null});
 const files=[entry('音频素材','directory'),entry('音频素材/原始录音','directory'),entry('音频素材/原始录音/采访片段.wav'),entry('音频素材/background.mp3'),entry('音频素材/环境音.flac'),entry('配置文件','directory'),entry('配置文件/graph.json'),entry('配置文件/workflow.yaml'),entry('README.md','file',1800),entry('效果图.png','file',13500),entry('采样参数.txt','file',357),entry('这是一个很长的中文音频文件名称用于检查大小列是否挤压名称显示空间_混音最终版本.wav'),entry('archive.zip')];
 export async function invokeDesktop(command,args){if(command==='workspace_browser_list'){const entries=files.filter(e=>e.path.split('/').slice(0,-1).join('/')===args.path);return{space:args.space,path:args.path,entries,offset:0,next_offset:null,total:entries.length,partial:false,warnings:[]};}if(command==='workspace_browser_text')return{space:args.space,path:args.path,text:'示例配置文件',bytes:24,truncated:false};throw Error(command);}`;

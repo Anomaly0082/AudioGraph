@@ -251,6 +251,29 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
       if (sameWorkspace(sessionId, token)) setConversationLoading(false);
     }
   }
+  async function deleteConversation(id: string) {
+    const sessionId = latest.current.connection?.sessionId;
+    if (!sessionId || !id || selected.current !== id || lock.current || conversationLoading || busy || latest.current.blocked()) return;
+    lock.current = true;
+    const token = ++epoch.current;
+    setConversationLoading(true);
+    setError("");
+    try {
+      await invokeDesktop("conversation_delete", { sessionId, conversationId: id });
+      if (!sameWorkspace(sessionId, token) || selected.current !== id) return;
+      selected.current = null;
+      setConversation(null);
+      setTurns([]);
+      setDrafts(old => { const next = { ...old }; delete next[id]; return next; });
+      setConversations(old => old.filter(item => item.id !== id));
+      setWarnings([]);
+    } catch (reason) {
+      if (sameWorkspace(sessionId, token)) setError(formatError(reason));
+    } finally {
+      lock.current = false;
+      if (sameWorkspace(sessionId, token)) setConversationLoading(false);
+    }
+  }
   async function loadOlder() {
     const sessionId = latest.current.connection?.sessionId;
     if (
@@ -492,6 +515,7 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
     hasOlder: conversation?.has_more ?? false,
     selectConversation,
     newConversation,
+    deleteConversation,
     loadOlder,
     spaces,
     busy,

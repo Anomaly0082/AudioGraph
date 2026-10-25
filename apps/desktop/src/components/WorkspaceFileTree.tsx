@@ -39,7 +39,7 @@ export default function WorkspaceFileTree({ browser: b, connected }: { browser: 
   function showMenu(x: number, y: number, entry: BrowserEntry | null) {
     if (b.mutating) return;
     if (entry) b.focusEntry(entry); else b.chooseRoot();
-    setMenu({ x: Math.max(8, Math.min(x, innerWidth - 190)), y: Math.max(8, Math.min(y, innerHeight - 290)), entry });
+    setMenu({ x: Math.max(8, Math.min(x, innerWidth - 190)), y: Math.max(8, Math.min(y, innerHeight - 370)), entry });
   }
   function focusRow(entry: BrowserEntry) { b.focusEntry(entry); tree.current?.querySelector<HTMLButtonElement>(`[data-path="${CSS.escape(entry.path)}"]`)?.focus(); }
   function keyboard(event: KeyboardEvent<HTMLDivElement>) {
@@ -53,6 +53,7 @@ export default function WorkspaceFileTree({ browser: b, connected }: { browser: 
     else if (event.key === "ArrowLeft" && active) { if (active.kind === "directory" && b.branches[active.path]?.expanded) void b.toggleDirectory(active); else { const parent = rows.find(entry => entry.path === parentBrowserPath(active.path)); if (parent) focusRow(parent); } }
     else if (event.key === "F2" && active) b.beginMutation("rename", active);
     else if (event.key === "Delete" && active) { if (!event.repeat) b.beginMutation("trash", active); }
+    else if (event.shiftKey && event.altKey && !ctrl && event.key.toLowerCase() === "c" && active) { if (!event.repeat) void b.copyPath(active); }
     else if (ctrl && event.key.toLowerCase() === "c" && active) b.copyEntry(active);
     else if (ctrl && event.key.toLowerCase() === "x" && active) b.copyEntry(active, true);
     else if (ctrl && event.key.toLowerCase() === "v") void b.paste();
@@ -104,6 +105,7 @@ export default function WorkspaceFileTree({ browser: b, connected }: { browser: 
     {menu && createPortal(<div ref={menuRef} className="workspace-file-context-menu" role="menu" aria-label="文件操作" style={{ left: menu.x, top: menu.y }} onKeyDown={event => { if (event.key === "Escape") { setMenu(null); tree.current?.focus(); } if (event.key === "Tab") setMenu(null); if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); const items = [...menuRef.current!.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")]; const index = items.indexOf(document.activeElement as HTMLButtonElement); items[(index + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus(); } }}>
       <button role="menuitem" disabled={disabled} onClick={() => action(() => { if (menu.entry?.kind === "directory" && !b.branches[menu.entry.path]?.expanded) void b.toggleDirectory(menu.entry); b.beginMutation("mkdir"); })}>新建文件夹</button>
       {menu.entry && <><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.copyEntry(menu.entry!))}>复制 <kbd>Ctrl+C</kbd></button><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.copyEntry(menu.entry!, true))}>剪切 <kbd>Ctrl+X</kbd></button></>}
+      {menu.entry && <><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => void b.copyPath(menu.entry!))}>复制路径 <kbd>Shift+Alt+C</kbd></button><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => void b.copyPath(menu.entry!, true))}>复制相对路径</button></>}
       <button role="menuitem" disabled={disabled || !b.clipboard} onClick={() => action(() => void b.paste())}>粘贴 <kbd>Ctrl+V</kbd></button>
       {menu.entry && browserFileKind(menu.entry) === "audio" && <button role="menuitem" disabled={disabled} onClick={() => action(() => b.beginConversion(menu.entry!))}>格式转换</button>}
       {menu.entry && <><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.beginMutation("rename", menu.entry!))}>重命名 <kbd>F2</kbd></button><button role="menuitem" disabled={disabled || menu.entry.kind === "unsupported"} onClick={() => action(() => b.beginMutation("trash", menu.entry!))}>移到回收站 <kbd>Delete</kbd></button></>}

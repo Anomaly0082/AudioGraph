@@ -312,19 +312,18 @@
   .app-layout-workbench .agent-spaces > .disclosure-content { max-height: 40px; }
   .app-layout-workbench .agent-alerts { max-height: 48px; }
 }
-/* Explicitly opened workspace controls need room; do not squeeze them into a status strip. */
+/* Keep workspace controls in the column flow: they must not cover the chat.
+   Scroll long settings inside a bounded area, leaving the composer accessible. */
 .app-layout-workbench .app-shell-notices.notices-expanded {
-  position: absolute;
-  z-index: 10;
-  top: 64px;
-  left: 22px;
-  right: 22px;
-  max-height: calc(100% - 84px);
+  position: static;
+  flex: 0 1 auto;
+  max-height: min(30dvh, 280px);
+  margin-bottom: 12px;
   background: var(--surface);
-  border-radius: 12px;
-  box-shadow: 0 10px 32px #26314326;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
 }
-.app-layout-workbench .notices-expanded .workspace-panel { margin-bottom: 0; }
+.app-layout-workbench .notices-expanded .workspace-panel { margin-bottom: 0; border: 0; border-radius: 0; }
 @media (max-width: 900px) {
   .app-layout-workbench { display: flex; flex-direction: column; }
   .app-layout-workbench .app-sidebar { flex-shrink: 0; align-self: stretch; padding: 10px 16px; gap: 8px; }
@@ -336,5 +335,4 @@
   .app-layout-workbench .workspace-switch { margin-left: auto; max-width: 55%; }
   .app-layout-workbench .topbar-status { order: 3; flex-basis: 100%; }
   .app-layout-workbench .app-content { padding: 8px; }
-  .app-layout-workbench .app-shell-notices.notices-expanded { top: 84px; left: 8px; right: 8px; max-height: calc(100% - 96px); }
 }

@@ -18,5 +18,5 @@ tokio = { version = "1", features = ["time", "sync", "macros"] }
 sha2 = "0.10.9"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_System_DataExchange", "Win32_System_Memory"] }
 windows-core = "0.61.2"

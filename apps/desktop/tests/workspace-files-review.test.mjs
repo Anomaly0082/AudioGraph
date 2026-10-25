@@ -24,7 +24,7 @@ function host(api) {
   };
   react.useLayoutEffect=react.useEffect;
   const model=load("../src/workspace-browser-model.ts",{"./model":{parseGraph:()=>{throw Error("Unexpected graph parse");}}});
-  const hook=load("../src/hooks/useWorkspaceBrowser.ts",{react,"../api/desktop":{desktopAvailable:()=>true,listenWorkspaceFileDrop:async()=>()=>{},invokeDesktop:api},"../model":{formatError:String},"../workspace-browser-model":model}).useWorkspaceBrowser;
+  const hook=load("../src/hooks/useWorkspaceBrowser.ts",{react,"../api/desktop":{desktopAvailable:()=>true,audioPreviewUrl:token=>`http://audiopreview.localhost/${token}`,closeAudioPreview:token=>api("workspace_audio_close",{token}),listenWorkspaceFileDrop:async()=>()=>{},invokeDesktop:api},"../model":{formatError:String},"../workspace-browser-model":model}).useWorkspaceBrowser;
   const connection={sessionId:"review-session",workspace:"C:/review"};
   function render(){do{dirty=false;cursor=0;effects=[];result=hook(connection,true,{enabled:true});for(const effect of effects)effect();}while(dirty);return result;}
   async function flush(){await new Promise(resolve=>setImmediate(resolve));return render();}
@@ -32,6 +32,23 @@ function host(api) {
 }
 const entry=(path,kind="file")=>({name:path.split("/").pop(),path,kind,bytes:0,modified_at_ms:null});
 const listing=(args,entries,next=null)=>({space:args.space,path:args.path,entries,offset:args.offset??0,next_offset:next,total:entries.length,partial:false,warnings:[]});
+
+test("path copying invokes only scoped native clipboard command and reports failure",async()=>{
+  const copies=[];let fail=false;
+  const h=host(async(command,args)=>{
+    if(command==="workspace_browser_list")return listing(args,[entry("clip.wav")]);
+    assert.equal(command,"workspace_copy_path");copies.push(args);
+    if(fail)throw Error("clipboard unavailable");
+  });
+  let b=await h.flush();
+  await b.copyPath(entry("clip.wav"));await b.copyPath(entry("clip.wav"),true);
+  assert.deepEqual(copies,[
+    {sessionId:"review-session",space:"user",path:"clip.wav",relative:false},
+    {sessionId:"review-session",space:"user",path:"clip.wav",relative:true},
+  ]);
+  await b.copyPath(entry("untrusted.bin","unsupported"));assert.equal(copies.length,2);
+  fail=true;await b.copyPath(entry("clip.wav"));b=h.render();assert.match(b.error,/clipboard unavailable/);
+});
 
 test("paging and refresh clear invisible active targets and pending rename",async()=>{
   let replacement=false;

@@ -270,6 +270,73 @@ fn hardlinked_records_cannot_be_loaded_or_replaced() {
     assert_eq!(before, fs::read(&alias).unwrap());
 }
 
+#[test]
+fn deleting_one_conversation_preserves_bytes_and_unrelated_workspace_files() {
+    let f = Fixture::new(); let store = Arc::new(ConversationStore::default());
+    let detail = f.create(&store,"graph"); let kept = f.create(&store,"workflow");
+    let mut guard = f.begin(&store,&detail.id,"completed");
+    guard.finish(reply("completed"),vec!["a".repeat(64)]).unwrap(); drop(guard);
+    let dir = storage_dir(&f.spaces,&f.app,false).unwrap(); let source = record_path(&dir,&detail.id).unwrap();
+    let original = fs::read(&source).unwrap();
+    let audio = f.spaces.user_root.join("recording.wav"); fs::write(&audio,b"user audio").unwrap();
+    let ai = f.spaces.ai_root.join("converted.wav"); fs::write(&ai,b"AI audio").unwrap();
+    let run = f.app.join("run-records").join("v1").join(dir.file_name().unwrap()).join("records");
+    fs::create_dir_all(&run).unwrap(); let run = run.join(format!("{}.json","a".repeat(64))); fs::write(&run,b"run record").unwrap();
+    let deleted = store.delete(&f.spaces,&f.app,&detail.id).unwrap();
+    assert_eq!(deleted.id,detail.id); assert!(deleted.recoverable); assert!(!source.exists());
+    let listed = store.list(&f.spaces,&f.app).unwrap(); assert_eq!(listed.records.len(),1); assert_eq!(listed.records[0].id,kept.id);
+    assert!(store.load(&f.spaces,&f.app,&detail.id,None,None).is_err());
+    assert!(store.begin_turn(&f.spaces,&f.app,&detail.id,"graph","late","Prompt",None).is_err());
+    let trash = scoped_storage_dir(&f.spaces,&f.app,"conversation-trash",false).unwrap();
+    assert!(!trash.starts_with(&dir));
+    let entry = fs::read_dir(&trash).unwrap().next().unwrap().unwrap().path().join(format!("{}.json",detail.id));
+    assert_eq!(fs::read(entry).unwrap(),original);
+    assert_eq!(fs::read(audio).unwrap(),b"user audio"); assert_eq!(fs::read(ai).unwrap(),b"AI audio"); assert_eq!(fs::read(run).unwrap(),b"run record");
+    assert!(store.delete(&f.spaces,&f.app,&detail.id).is_err());
+}
+
+#[test]
+fn deletion_rejects_active_turn_and_cannot_race_turn_start() {
+    let f = Fixture::new(); let store = Arc::new(ConversationStore::default());
+    let detail = f.create(&store,"graph"); let mut guard = f.begin(&store,&detail.id,"busy");
+    assert!(store.delete(&f.spaces,&f.app,&detail.id).unwrap_err().contains("active turn"));
+    guard.checkpoint(json!([]),vec![],vec![]).unwrap(); guard.finish(reply("busy"),vec![]).unwrap(); drop(guard);
+    store.delete(&f.spaces,&f.app,&detail.id).unwrap();
+    for index in 0..8 {
+        let detail = f.create(&store,"graph"); let barrier = Arc::new(std::sync::Barrier::new(2));
+        let turn_store = store.clone(); let turn_spaces = f.spaces.clone(); let turn_app = f.app.clone(); let turn_id = detail.id.clone(); let turn_barrier = barrier.clone();
+        let turn = std::thread::spawn(move || { turn_barrier.wait(); turn_store.begin_turn(&turn_spaces,&turn_app,&turn_id,"graph",&format!("race-{index}"),"Prompt",None) });
+        let delete_store = store.clone(); let delete_spaces = f.spaces.clone(); let delete_app = f.app.clone(); let delete_id = detail.id.clone();
+        let deletion = std::thread::spawn(move || { barrier.wait(); delete_store.delete(&delete_spaces,&delete_app,&delete_id) });
+        let turn = turn.join().unwrap(); let deleted = deletion.join().unwrap();
+        assert_ne!(turn.is_ok(),deleted.is_ok(),"Exactly one operation must win; a live turn may not be deleted");
+        drop(turn);
+    }
+}
+
+#[test]
+fn deletion_is_scoped_and_rejects_unsafe_paths_hardlinks_and_directories() {
+    let f = Fixture::new(); let store = Arc::new(ConversationStore::default()); let detail = f.create(&store,"graph");
+    let other = f.root.join("other"); fs::create_dir(&other).unwrap(); let other = ToolWorkspaces::new(&other,&f.app).unwrap();
+    assert!(store.delete(&other,&f.app,&detail.id).is_err());
+    for id in ["../escape","/absolute","bad.json",""] { assert!(store.delete(&f.spaces,&f.app,id).is_err()); }
+    let dir = storage_dir(&f.spaces,&f.app,false).unwrap(); let source = record_path(&dir,&detail.id).unwrap(); let bytes = fs::read(&source).unwrap();
+    let alias = f.root.join("alias.json"); fs::hard_link(&source,&alias).unwrap();
+    assert!(store.delete(&f.spaces,&f.app,&detail.id).is_err()); assert_eq!(fs::read(&source).unwrap(),bytes); assert_eq!(fs::read(&alias).unwrap(),bytes);
+    let directory_id = "c".repeat(64); fs::create_dir(record_path(&dir,&directory_id).unwrap()).unwrap(); assert!(store.delete(&f.spaces,&f.app,&directory_id).is_err());
+    assert!(!f.app.join("conversation-trash").exists());
+}
+
+#[test]
+fn damaged_json_can_be_removed_from_listing_without_discarding_original_bytes() {
+    let f = Fixture::new(); let store = Arc::new(ConversationStore::default()); let detail = f.create(&store,"graph");
+    let dir = storage_dir(&f.spaces,&f.app,false).unwrap(); let source = record_path(&dir,&detail.id).unwrap();
+    fs::write(&source,b"broken { JSON and recovery bytes").unwrap(); assert_eq!(store.list(&f.spaces,&f.app).unwrap().warnings.len(),1);
+    store.delete(&f.spaces,&f.app,&detail.id).unwrap(); let list = store.list(&f.spaces,&f.app).unwrap(); assert!(list.records.is_empty()); assert!(list.warnings.is_empty());
+    let trash = scoped_storage_dir(&f.spaces,&f.app,"conversation-trash",false).unwrap(); let entry = fs::read_dir(trash).unwrap().next().unwrap().unwrap().path().join(format!("{}.json",detail.id));
+    assert_eq!(fs::read(entry).unwrap(),b"broken { JSON and recovery bytes");
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_record_and_storage_component_are_rejected() {

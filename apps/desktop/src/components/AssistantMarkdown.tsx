@@ -1,7 +1,8 @@
+import { memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-export default function AssistantMarkdown({ text }: { text: string }) {
+function AssistantMarkdown({ text }: { text: string }) {
   return (
     <div className="assistant-markdown">
       <Markdown
@@ -34,3 +35,5 @@ export default function AssistantMarkdown({ text }: { text: string }) {
     </div>
   );
 }
+
+export default memo(AssistantMarkdown);

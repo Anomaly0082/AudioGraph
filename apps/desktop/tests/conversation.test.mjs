@@ -184,6 +184,8 @@ test("persistent conversation UI offers selection/new/read-history and clearly s
     }),
   );
   assert.match(html, /选择AI会话|新建会话|查看更早消息/);
+  assert.match(html, /aria-label="删除当前会话"/);
+  assert.doesNotMatch(html, /aria-label="删除当前会话"[^>]*disabled/);
   assert.match(html, /已中断/);
   assert.match(html, /不会自动重试/);
   assert.match(html, /未确认的工具调用|graph_run/);
@@ -199,7 +201,12 @@ test("persistent conversation UI offers selection/new/read-history and clearly s
     }),
   );
   assert.match(busy, /aria-label="选择AI会话"[^>]*disabled=""/);
+  assert.match(busy, /aria-label="删除当前会话"[^>]*disabled=""/);
   assert.match(busy, /disabled="">新建会话/);
+  const noCurrent = renderToStaticMarkup(React.createElement(Panel, {
+    agent: { ...agent, conversationId: null }, blocked: false, onSend: noop, onApplyGraph: noop, onSettings: noop,
+  }));
+  assert.match(noCurrent, /aria-label="删除当前会话"[^>]*disabled=""/);
   const longTitle = "C:/AAAProject/AudioProcess/apps/desktop/src/components/ConversationTurnView.tsx";
   const titled = renderToStaticMarkup(React.createElement(Panel, {
     agent: { ...agent, conversations: [{ ...summary, title: longTitle }] },

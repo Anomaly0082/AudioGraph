@@ -26,7 +26,7 @@ cargo test --offline audio_conversion
 Cargo debug 构建将资源复制到 exe 相邻的 `ffmpeg` 目录；Tauri resources 也使用这一结构。
 运行时不回退到 PATH、当前目录或环境中的 FFmpeg；缺失时明确报错。
 
-明确需要搬移本机开发副本时：
+明确需要搬移本机开发副本时，在 PowerShell 7 中执行：
 
 ```powershell
 # 在 apps/desktop 下先生成内嵌前端的 debug 程序，不需要本地 Vite 服务器。
@@ -35,8 +35,10 @@ npm run tauri -- build --debug --no-bundle
 .\scripts\package-desktop.ps1 -LocalDevelopmentOnly -Destination 'C:\本地开发测试\音频 工具'
 ```
 
-目标必须不存在，脚本不会覆盖已有目录。脚本要求成功的 Tauri CLI 内嵌前端构建标记，
-不接受普通 `cargo build` 的程序；`control-cli.exe` 缺失时也会在创建目录前拒绝继续。
+目标必须不存在，脚本不会覆盖已有目录。脚本只读检查可执行文件内嵌的版本化构建信息，
+不依赖旁边的模式文件或修改时间，也不执行待打包程序；不接受普通 `cargo build` 的程序。
+复制后会再次检查实际副本，包内 `desktop-build-mode.json` 从该副本生成。
+`control-cli.exe` 缺失时也会在创建目录前拒绝继续。
 这不是正式可分发便携包。运行时不校验固定 hash，用户可替换兼容的 FFmpeg/LGPL DLL。
 
 ## 尚缺的分发材料
@@ -81,3 +83,15 @@ cargo test --offline --manifest-path apps/desktop/src-tauri/Cargo.toml audio_con
 
 第二项测试在 `audio_conversion_asr_tests.rs`；普通测试不要求安装 ASR。
 AVX2 包仅适用于支持该指令集的机器，也可显式选择兼容的非 AVX2 包。
+
+### 增量构建模式检查
+
+模式信息通过 Cargo 的 `rustc-env` 写入对应可执行文件，而非共用 target 目录的旁文件。
+这避免 `cargo test` / 普通 `cargo build` 与 Tauri CLI 的增量缓存互相污染打包判定。
+`scripts/desktop-build-info.ps1` 只读扫描唯一版本化标记，严格校验 JSON 字段、类型和构建模式；
+打包前和复制后均检查，目标 marker 从实际副本生成。它不是签名或恶意程序鉴定机制。
+
+`scripts/test-desktop-build-info.ps1` 提供纯文件测试；可传 `-EmbeddedExecutable` 和
+`-DevExecutable` 加测两种真实编译产物，均不执行 EXE。2026-10-24：26 项通过，
+包括错误/未来时间的旁 marker 不影响有效内嵌构建，以及普通开发构建拒绝打包。
+正式 release 的 FFmpeg 源码材料门禁保持不变。

@@ -7,6 +7,15 @@ use tauri::Manager;
 
 const CONVERSION_TIMEOUT: Duration = Duration::from_secs(120);
 
+fn manual_options(format: Option<&str>, sample_rate: Option<u32>, channels: Option<u16>) -> Result<ConversionOptions,String> {
+    let options = ConversionOptions {
+        output_format: audio_conversion::OutputFormat::parse(format.unwrap_or("wav"))?,
+        sample_rate, channels,
+    };
+    options.validate()?;
+    Ok(options)
+}
+
 fn request_key(window: &str, session: &str, request: &str) -> Result<String, String> {
     if session.is_empty() || session.len() > 256 || session.contains('\0') || request.is_empty()
         || request.len() > 128 || !request.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
@@ -24,10 +33,11 @@ impl Drop for CancelManualOnDrop {
 pub async fn workspace_audio_convert(app: tauri::AppHandle, window: tauri::Window,
     backend: tauri::State<'_, Arc<BackendManager>>, agent: tauri::State<'_, Arc<AgentManager>>,
     tracker: tauri::State<'_, Arc<ManualRunTracker>>, session_id: String, space: String,
-    path: String, output_path: String, request_id: String, output_format: Option<String>) -> Result<Value, String> {
+    path: String, output_path: String, request_id: String, output_format: Option<String>,
+    sample_rate: Option<u32>, channels: Option<u16>) -> Result<Value, String> {
     if !matches!(space.as_str(), "user" | "ai") { return Err("工作区类型无效".into()); }
     let id = request_key(window.label(), &session_id, &request_id)?;
-    let output_format = audio_conversion::OutputFormat::parse(output_format.as_deref().unwrap_or("wav"))?;
+    let options = manual_options(output_format.as_deref(), sample_rate, channels)?;
     let agent = agent.inner().clone();
     let manager = backend.inner().clone();
     let tracker = tracker.inner().clone();
@@ -41,7 +51,7 @@ pub async fn workspace_audio_convert(app: tauri::AppHandle, window: tauri::Windo
         manager.with_workspace_operation(&session_id, |root| tracker.with_files_idle(&session_id, || {
             let spaces = ToolWorkspaces::new(root, &app_data)?;
             audio_conversion::convert(&spaces, &space, &path, &space, &output_path,
-                ConversionOptions { output_format, ..Default::default() }, &cancel, deadline)
+                options, &cancel, deadline)
         }))
     }).await.map_err(|error| format!("转换任务未能完成：{error}"))?;
     guard.armed = false;
@@ -85,6 +95,21 @@ pub(crate) async fn convert_for_agent(spaces: ToolWorkspaces, source_space: Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manual_conversion_options_preserve_defaults_and_validate_explicit_adaptation() {
+        let defaults = manual_options(None, None, None).unwrap();
+        assert!(defaults.sample_rate.is_none() && defaults.channels.is_none());
+        assert_eq!(defaults.output_format, audio_conversion::OutputFormat::Wav);
+        let chosen = manual_options(Some("mp3"), Some(48000), Some(1)).unwrap();
+        assert_eq!(chosen.sample_rate, Some(48000));
+        assert_eq!(chosen.channels, Some(1));
+        for (format, rate, channels) in [("mp3",96000,1),("m4a",192000,2),("wav",0,1),("flac",48000,6)] {
+            assert!(manual_options(Some(format),Some(rate),Some(channels)).is_err());
+        }
+        assert!(manual_options(Some("m4a"),Some(96000),Some(2)).is_ok());
+        assert!(manual_options(Some("flac"),Some(192000),None).is_ok());
+        assert!(manual_options(Some("mp3"),None,None).is_ok(), "Keep-original must be checked against actual source later");
+    }
     #[test]
     fn cancellation_keys_are_scoped_and_pre_cancelled_without_blocking_other_jobs() {
         let id = request_key("main", "session-a", "nonce-1").unwrap();

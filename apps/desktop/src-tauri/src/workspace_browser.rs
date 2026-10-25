@@ -1,4 +1,4 @@
-//! Local read-only file browsing. Bytes never pass through the AI runtime or an asset server.
+//! Local read-only directory and text browsing; audio uses workspace_audio_stream.
 use crate::backend::BackendManager;
 use crate::run_records::opened_file_within_workspace;
 use crate::tool_workspaces::ToolWorkspaces;
@@ -11,7 +11,6 @@ use std::time::{Duration,Instant,UNIX_EPOCH};
 use tauri::Manager;
 
 const TEXT_LIMIT: usize = 256 * 1024;
-const AUDIO_LIMIT: usize = 32 * 1024 * 1024;
 const SCAN_LIMIT: usize = 10_000;
 const SCAN_TIME: Duration = Duration::from_secs(2);
 const PAGE_LIMIT: usize = 200;
@@ -142,9 +141,8 @@ fn open_file(spaces: &ToolWorkspaces,space: &str,path: &str) -> Result<(File,Met
     Ok((file,opened))
 }
 
-fn read_bytes(spaces: &ToolWorkspaces,space: &str,path: &str,limit: usize,allow_prefix: bool) -> Result<(Vec<u8>,u64,bool),String> {
+fn read_bytes(spaces: &ToolWorkspaces,space: &str,path: &str,limit: usize) -> Result<(Vec<u8>,u64,bool),String> {
     let (mut file,before) = open_file(spaces,space,path)?;
-    if !allow_prefix && before.len() > limit as u64 { return Err("Audio preview exceeds 32 MiB; choose a smaller file".into()); }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file).take(limit as u64+1).read_to_end(&mut bytes)
         .map_err(|error| format!("Cannot read file: {error}"))?;
@@ -156,7 +154,6 @@ fn read_bytes(spaces: &ToolWorkspaces,space: &str,path: &str,limit: usize,allow_
     // Check the current path as well; never label an old opened handle as the new linked file.
     spaces.checked_path(space,path,false)?;
     let truncated = bytes.len() > limit;
-    if !allow_prefix && truncated { return Err("Audio preview exceeds 32 MiB".into()); }
     if !truncated && bytes.len() as u64 != before.len() {
         return Err("File length changed during preview".into());
     }
@@ -165,7 +162,7 @@ fn read_bytes(spaces: &ToolWorkspaces,space: &str,path: &str,limit: usize,allow_
 }
 
 fn preview_text(spaces: &ToolWorkspaces,space: &str,path: &str) -> Result<BrowserText,String> {
-    let (mut bytes,size,truncated) = read_bytes(spaces,space,path,TEXT_LIMIT,true)?;
+    let (mut bytes,size,truncated) = read_bytes(spaces,space,path,TEXT_LIMIT)?;
     match std::str::from_utf8(&bytes) {
         Ok(_) => {},
         Err(error) if truncated && error.error_len().is_none() => bytes.truncate(error.valid_up_to()),
@@ -176,14 +173,6 @@ fn preview_text(spaces: &ToolWorkspaces,space: &str,path: &str) -> Result<Browse
         return Err("This file contains binary control bytes and cannot be previewed as text".into());
     }
     Ok(BrowserText { space:space.into(),path:path.into(),text,bytes:size,truncated })
-}
-
-fn preview_audio(spaces: &ToolWorkspaces,space: &str,path: &str) -> Result<Vec<u8>,String> {
-    let extension = Path::new(path).extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
-    if !matches!(extension.as_str(),"wav" | "mp3" | "ogg" | "oga" | "flac" | "m4a" | "aac" | "webm") {
-        return Err("Unsupported audio preview extension; use WAV, MP3, OGG, FLAC, M4A, AAC or WebM".into());
-    }
-    Ok(read_bytes(spaces,space,path,AUDIO_LIMIT,false)?.0)
 }
 
 fn data_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf,String> {
@@ -217,21 +206,6 @@ pub async fn workspace_browser_text(app: tauri::AppHandle,backend: tauri::State<
         manager.workspace(&session_id)?;
         Ok(result)
     }).await.map_err(|_| "Text preview task failed".to_owned())?
-}
-
-#[tauri::command]
-pub async fn workspace_browser_audio(app: tauri::AppHandle,backend: tauri::State<'_,Arc<BackendManager>>,
-    session_id: String,space: String,path: String) -> Result<tauri::ipc::Response,String> {
-    let manager = backend.inner().clone();
-    let user_root = manager.workspace(&session_id)?;
-    let data = data_path(&app)?;
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
-        manager.workspace(&session_id)?;
-        let result = preview_audio(&ToolWorkspaces::new_read_only(&user_root,&data)?,&space,&path)?;
-        manager.workspace(&session_id)?;
-        Ok::<_,String>(result)
-    }).await.map_err(|_| "Audio preview task failed".to_owned())??;
-    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[cfg(test)]

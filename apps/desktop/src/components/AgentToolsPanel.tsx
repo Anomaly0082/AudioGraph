@@ -1,9 +1,10 @@
+import { useEffect, useRef, useState } from "react";
 import type { AgentTools } from "../hooks/useAgentTools";
 import type { GraphDocument } from "../model";
 import { workspaceDisplayPath } from "../recent-workspaces";
 import Disclosure from "./Disclosure";
 import ConversationTurnView from "./ConversationTurnView";
-import { Plus, Send, Settings2, Square } from "lucide-react";
+import { Plus, Send, Settings2, Square, Trash2 } from "lucide-react";
 
 function conversationLabel(title: string): string {
   const label = title === "New conversation" ? "新会话" : title;
@@ -29,6 +30,8 @@ export default function AgentToolsPanel({
   onApplyWorkflow?: (text: string, label: string) => void;
   connectionHint?: string;
 }) {
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  useEffect(() => { setDeleteTarget(null); }, [agent.conversationId]);
   return (
     <section
       className="panel agent-tools-panel"
@@ -70,6 +73,7 @@ export default function AgentToolsPanel({
             ))}
           </select>
         </label>
+        <button type="button" className="small" title="删除当前会话" aria-label="删除当前会话" disabled={agent.busy || agent.loading || blocked || !agent.conversationId} onClick={() => setDeleteTarget(agent.conversationId)}><Trash2 className="ui-icon" size={16} strokeWidth={1.65} aria-hidden="true" /></button>
         <div className="agent-toolbar-actions">
         <button
           disabled={agent.busy || agent.loading || !agent.spaces}
@@ -80,6 +84,7 @@ export default function AgentToolsPanel({
         <button className="small" onClick={onSettings}><Settings2 className="ui-icon" size={16} strokeWidth={1.65} aria-hidden="true" />模型设置</button>
         </div>
       </div>
+      {deleteTarget && <DeleteConversationDialog disabled={agent.busy || agent.loading || blocked} onCancel={() => setDeleteTarget(null)} onConfirm={() => { const id = deleteTarget; setDeleteTarget(null); void agent.deleteConversation(id); }} />}
       <Disclosure label="工作区与可用工具" className="agent-spaces">
       <p className="hint agent-mode-hint">
         {agent.mode === "graph"
@@ -179,4 +184,20 @@ export default function AgentToolsPanel({
       </div>
     </section>
   );
+}
+function DeleteConversationDialog({ disabled, onCancel, onConfirm }: { disabled: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const modal = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    modal.current?.showModal(); cancel.current?.focus();
+    return () => { if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+  return <dialog ref={modal} className="workspace-file-dialog" aria-labelledby="delete-conversation-title" onCancel={event => { event.preventDefault(); onCancel(); }}>
+    <form onSubmit={event => { event.preventDefault(); if (!disabled) onConfirm(); }}>
+      <h2 id="delete-conversation-title">删除当前会话？</h2>
+      <p>从会话列表移除，保留本机备份；音频和运行记录不变。</p>
+      <div className="action-row"><button ref={cancel} type="button" onClick={onCancel}>取消</button><button className="danger" type="submit" disabled={disabled}>删除</button></div>
+    </form>
+  </dialog>;
 }

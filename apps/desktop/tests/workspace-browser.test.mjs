@@ -7,7 +7,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const require = createRequire(import.meta.url);
 const {
-  AUDIO_PREVIEW_LIMIT,
   AudioPreviewOwner,
   audioMime,
   browserBreadcrumbs,
@@ -19,6 +18,7 @@ const {
   defaultConvertedAudioName,
   convertedAudioOutputPath,
   replaceConvertedAudioExtension,
+  validatedAudioConversionOptions,
   browserPathContains,
   formatBrowserBytes,
   matchesBrowserSnapshot,
@@ -127,7 +127,7 @@ test("file classifiers choose explicit audio MIME or plain text without executin
   );
   assert.equal(browserFileKind(entry({ path: "unknown.exe" })), "unknown");
   assert.equal(browserFileKind(entry({ kind: "unsupported" })), "unknown");
-  assert.equal(formatBrowserBytes(AUDIO_PREVIEW_LIMIT), "32.0 MiB");
+  assert.equal(formatBrowserBytes(32 * 1024 * 1024), "32.0 MiB");
 });
 
 test("only complete shaped configurations offer editor loading", () => {
@@ -155,13 +155,12 @@ test("only complete shaped configurations offer editor loading", () => {
 
 function audioFixture() {
   const calls = [];
-  let serial = 0;
   const owner = new AudioPreviewOwner({
-    create: (blob) => {
-      calls.push(`create:${blob.type}:${blob.size}`);
-      return `blob:${++serial}`;
+    url: (token) => {
+      calls.push(`url:${token}`);
+      return `audiopreview://localhost/${token}`;
     },
-    revoke: (url) => calls.push(`revoke:${url}`),
+    release: (token) => calls.push(`release:${token}`),
   });
   const player = {
     src: "",
@@ -172,23 +171,24 @@ function audioFixture() {
   return { owner, calls, player };
 }
 
-test("audio snapshot never starts playback, owns at most one Blob, and unloads before revoke", () => {
+const audioSession = (token = "one", bytes = 8) => ({token, bytes, mime:"audio/wav"});
+test("audio session supports large files, never starts playback, and unloads before release", () => {
   const { owner, calls, player } = audioFixture();
   assert.equal(
-    owner.replace(new ArrayBuffer(8), "audio/wav", () => true),
-    "blob:1",
+    owner.replace(audioSession(), () => true),
+    "audiopreview://localhost/one",
   );
   owner.attach(player);
-  assert.equal(player.src, "blob:1");
+  assert.equal(player.src, "audiopreview://localhost/one");
   assert.equal(
-    owner.replace(new ArrayBuffer(9), "audio/wav", () => true),
-    "blob:2",
+    owner.replace(audioSession("two", 1024 * 1024 * 1024), () => true),
+    "audiopreview://localhost/two",
   );
-  assert.deepEqual(calls.slice(1, 5), [
+  assert.deepEqual(calls.slice(2, 6), [
     "pause",
     "remove:src",
     "load",
-    "revoke:blob:1",
+    "release:one",
   ]);
   owner.clear();
   assert.equal(owner.url, null);
@@ -196,7 +196,7 @@ test("audio snapshot never starts playback, owns at most one Blob, and unloads b
     "pause",
     "remove:src",
     "load",
-    "revoke:blob:2",
+    "release:two",
   ]);
   assert.equal(
     calls.some((call) => call === "play"),
@@ -206,51 +206,74 @@ test("audio snapshot never starts playback, owns at most one Blob, and unloads b
 
 test("audio detachment immediately pauses and unloads while a StrictMode ref can reattach the same URL", () => {
   const { owner, calls, player } = audioFixture();
-  owner.replace(new ArrayBuffer(8), "audio/wav", () => true);
+  owner.replace(audioSession(), () => true);
   owner.attach(player);
   owner.attach(null);
   assert.deepEqual(calls.slice(-3), ["pause", "remove:src", "load"]);
   owner.attach(player);
-  assert.equal(player.src, "blob:1");
-  assert.equal(calls.filter((call) => call.startsWith("create:")).length, 1);
+  assert.equal(player.src, "audiopreview://localhost/one");
+  assert.equal(calls.filter((call) => call.startsWith("url:")).length, 1);
   owner.clear();
-  assert.equal(calls.at(-1), "revoke:blob:1");
+  assert.equal(calls.at(-1), "release:one");
 });
 
-test("late audio creates no URL and a scope change during creation immediately revokes it", () => {
+test("late audio releases its token and a scope change during URL creation immediately releases it", () => {
   const fixture = audioFixture();
   assert.equal(
-    fixture.owner.replace(new ArrayBuffer(8), "audio/wav", () => false),
+    fixture.owner.replace(audioSession(), () => false),
     null,
   );
-  assert.deepEqual(fixture.calls, []);
+  assert.deepEqual(fixture.calls, ["release:one"]);
   let attempts = 0;
   assert.equal(
     fixture.owner.replace(
-      new ArrayBuffer(8),
-      "audio/wav",
+      audioSession(),
       () => ++attempts === 1,
     ),
     null,
   );
-  assert.deepEqual(fixture.calls, ["create:audio/wav:8", "revoke:blob:1"]);
+  assert.deepEqual(fixture.calls, ["release:one", "url:one", "release:one"]);
   assert.equal(fixture.owner.url, null);
   assert.throws(
-    () => fixture.owner.replace(new ArrayBuffer(0), "audio/wav", () => true),
-    /32 MiB/,
+    () => fixture.owner.replace(audioSession("empty", 0), () => true),
+    /信息无效/,
   );
   assert.throws(
     () =>
-      fixture.owner.replace(
-        new ArrayBuffer(AUDIO_PREVIEW_LIMIT + 1),
-        "audio/wav",
-        () => true,
-      ),
-    /32 MiB/,
+      fixture.owner.replace({...audioSession(), mime:"text/html"}, () => true),
+    /信息无效/,
   );
+});
+test("audio rejects untrusted URLs and malformed tokens, and clear is idempotent", () => {
+  const released=[];
+  for(const url of ["blob:unsafe", "https://evil.test/one", "http://audiopreview.localhost.evil/one", "audiopreview://localhost/other", "audiopreview://localhost/one?x=1"]) {
+    const owner=new AudioPreviewOwner({url:()=>url,release:token=>released.push(token)});
+    assert.throws(()=>owner.replace(audioSession(),()=>true), /地址无效/);
+    assert.equal(owner.url,null);
+  }
+  assert.equal(released.length,5);
+  const {owner,calls}=audioFixture();
+  assert.throws(()=>owner.replace(audioSession("../one"),()=>true), /会话无效/);
+  owner.replace(audioSession(),()=>true);
+  owner.clear(); owner.clear();
+  assert.equal(calls.filter(call=>call==="release:one").length,1);
 });
 
 const noop = () => {};
+test("audio release drain waits for completion and reports close failure without unhandled rejection", async () => {
+  let finish;
+  const owner = new AudioPreviewOwner({url:token=>`http://audiopreview.localhost/${token}`,release:()=>new Promise(resolve=>finish=resolve)});
+  owner.replace(audioSession(),()=>true);
+  owner.clear();
+  let drained=false;
+  const pending=owner.drain().then(()=>{drained=true;});
+  await Promise.resolve();
+  assert.equal(drained,false);
+  finish(); await pending; assert.equal(drained,true);
+  const failed = new AudioPreviewOwner({url:token=>`http://audiopreview.localhost/${token}`,release:async()=>{throw Error('close failed');}});
+  failed.replace(audioSession(),()=>true);failed.clear();
+  await assert.rejects(failed.drain(),/close failed/);
+});
 function render(overrides = {}, props = {}) {
   const browser = {
     space: "user",
@@ -354,6 +377,17 @@ test("audio conversion uses explicit matching formats beside its read-only sourc
   assert.throws(() => convertedAudioOutputPath("录音/a.wav", "new.wav", "flac"), /所选格式一致/);
   assert.throws(() => convertedAudioOutputPath("录音/a.wav", "new.ogg", "ogg"), /支持的输出格式/);
 });
+test("conversion options preserve defaults and reject unsupported explicit encoder settings", () => {
+  assert.deepEqual(validatedAudioConversionOptions("mp3"), {});
+  assert.deepEqual(validatedAudioConversionOptions("wav", {sampleRate:undefined,channels:undefined}), {});
+  assert.deepEqual(validatedAudioConversionOptions("mp3", {sampleRate:48000,channels:1}), {sampleRate:48000,channels:1});
+  assert.deepEqual(validatedAudioConversionOptions("m4a", {sampleRate:96000,channels:2}), {sampleRate:96000,channels:2});
+  assert.deepEqual(validatedAudioConversionOptions("flac", {sampleRate:192000}), {sampleRate:192000});
+  for(const sampleRate of [0,7999,192001,NaN,Infinity,44100.5,"48000"]) assert.throws(()=>validatedAudioConversionOptions("wav",{sampleRate}));
+  for(const channels of [0,3,-1,NaN,"1"]) assert.throws(()=>validatedAudioConversionOptions("wav",{channels}));
+  for(const sampleRate of [88200,96000,176400,192000]) assert.throws(()=>validatedAudioConversionOptions("mp3",{sampleRate}), /重新选择/);
+  for(const sampleRate of [176400,192000]) assert.throws(()=>validatedAudioConversionOptions("m4a",{sampleRate}), /重新选择/);
+});
 
 test("file tree uses meaningful SVG icons and omits inactive pagination", () => {
   const html = render({
@@ -400,19 +434,17 @@ test("audio selection requires loading and loaded native controls never autoplay
   const selected = entry();
   const unloaded = render({ selected });
   assert.match(unloaded, /加载音频/);
-  assert.match(unloaded, /32 MiB/);
+  assert.doesNotMatch(unloaded, /32 MiB/);
   assert.doesNotMatch(unloaded, /<audio/);
-  const loaded = render({ selected, audioUrl: "blob:local-only" });
+  const loaded = render({ selected, audioUrl: "audiopreview://localhost/local-only" });
   assert.equal((loaded.match(/<audio /g) ?? []).length, 1);
-  assert.match(loaded, /src="blob:local-only"/);
+  assert.match(loaded, /src="audiopreview:\/\/localhost\/local-only"/);
   assert.match(loaded, /controls=""/);
   // Inline SVG's standard xmlns URL is an identifier, not a network request.
   assert.doesNotMatch(loaded, /auto[Pp]lay|iframe|(?:src|href)="https?:\/\//);
-  assert.match(
-    render({ selected: entry({ bytes: AUDIO_PREVIEW_LIMIT + 1 }) }),
-    /文件超过 32 MiB/,
-  );
-  const large = render({ filesEnabled: true, selected: entry({ bytes: AUDIO_PREVIEW_LIMIT + 1 }) });
+  const large = render({ filesEnabled: true, selected: entry({ bytes: 1024 * 1024 * 1024 }) });
+  assert.doesNotMatch(large, /32 MiB|disabled=""[^>]*>加载音频/);
+  assert.doesNotMatch(render({selected,audioUrl:"https://evil.test/one"}), /<audio/);
   assert.match(large, /<button>格式转换<\/button>/, "snapshot size does not disable conversion");
 });
 
@@ -458,7 +490,7 @@ test("unknown files show metadata and local decoding errors remain explicit", ()
   assert.doesNotMatch(html, /加载音频|<audio|运行文件/);
 });
 
-test("desktop CSP allows local Blob audio without permitting inline scripts", () => {
+test("desktop CSP allows scoped audio protocol only for media without permitting inline scripts", () => {
   const config = JSON.parse(
     readFileSync(
       new URL("../src-tauri/tauri.conf.json", import.meta.url),
@@ -472,7 +504,10 @@ test("desktop CSP allows local Blob audio without permitting inline scripts", ()
       .split(";")
       .map((part) => part.trim())
       .find((part) => part.startsWith(`${name} `)) ?? "";
-  assert.match(directive("media-src"), /(?:^|\s)blob:(?:\s|$)/);
+  assert.match(directive("media-src"), /(?:^|\s)audiopreview:(?:\s|$)/);
+  assert.match(directive("media-src"), /http:\/\/audiopreview\.localhost/);
+  assert.doesNotMatch(directive("media-src"), /blob:|asset:/);
+  assert.doesNotMatch(directive("connect-src"), /audiopreview/);
   assert.match(directive("script-src"), /'self'/);
   assert.doesNotMatch(directive("script-src"), /unsafe-inline|unsafe-eval/);
 });

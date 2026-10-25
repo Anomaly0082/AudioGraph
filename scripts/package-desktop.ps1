@@ -1,3 +1,4 @@
+#requires -Version 7.0
 [CmdletBinding()]
 param(
     [switch]$LocalDevelopmentOnly,
@@ -24,12 +25,8 @@ $destinationPath = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $destinationPath) { throw 'Local development destination already exists; choose a new directory. Nothing was overwritten.' }
 $sidecar = Join-Path (Split-Path -Parent $executablePath) 'control-cli.exe'
 if (!(Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw 'Required control-cli.exe sidecar is missing; no local copy was created.' }
-$buildModePath = Join-Path (Split-Path -Parent $executablePath) 'desktop-build-mode.json'
-if (!(Test-Path -LiteralPath $buildModePath -PathType Leaf)) { throw 'Build mode marker is missing. First run npm run tauri -- build --debug --no-bundle from apps/desktop.' }
-$buildMode = Get-Content -LiteralPath $buildModePath -Raw | ConvertFrom-Json
-if (!$buildMode.frontend_embedded -or $buildMode.profile -ne 'debug' -or (Get-Item -LiteralPath $executablePath).LastWriteTimeUtc -lt (Get-Item -LiteralPath $buildModePath).LastWriteTimeUtc) {
-    throw 'An embedded-frontend debug application is required. First run npm run tauri -- build --debug --no-bundle from apps/desktop; ordinary cargo build is not accepted.'
-}
+. (Join-Path $PSScriptRoot 'desktop-build-info.ps1')
+$buildMode = Read-DesktopEmbeddedBuildInfo -Executable $executablePath
 foreach ($file in $provenance.files) {
     if ($file.name -match '[/\\:]|^\.|\.\.') { throw 'Unsafe runtime manifest entry' }
     $runtimeFile = Join-Path $runtime "bin/$($file.name)"
@@ -39,8 +36,11 @@ foreach ($file in $provenance.files) {
 }
 New-Item -ItemType Directory -Path $destinationPath | Out-Null
 Copy-Item -LiteralPath $executablePath -Destination (Join-Path $destinationPath 'AudioProcess-local-development.exe')
+# A parallel build may replace the source after the preflight. Author the
+# marker from the actual copied artifact, and never bless a stale preflight.
+$buildMode = Read-DesktopEmbeddedBuildInfo -Executable (Join-Path $destinationPath 'AudioProcess-local-development.exe')
 Copy-Item -LiteralPath $sidecar -Destination (Join-Path $destinationPath 'control-cli.exe')
-Copy-Item -LiteralPath $buildModePath -Destination (Join-Path $destinationPath 'desktop-build-mode.json')
+$buildMode | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destinationPath 'desktop-build-mode.json') -Encoding utf8NoBOM
 Copy-Item -LiteralPath $runtime -Destination (Join-Path $destinationPath 'ffmpeg') -Recurse
 $notice = @'
 LOCAL DEVELOPMENT COPY — DO NOT REDISTRIBUTE

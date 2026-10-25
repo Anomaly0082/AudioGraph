@@ -17,8 +17,10 @@ mod conversation_commands;
 mod workflow;
 mod workflow_editor;
 mod workspace_browser;
+mod workspace_audio_stream;
 mod workspace_files;
 mod workspace_file_commands;
+mod workspace_clipboard;
 mod audio_conversion;
 mod audio_conversion_commands;
 mod ffmpeg_bundle;
@@ -107,6 +109,13 @@ fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManage
 }
 
 fn main() {
+    // This diagnostic path must precede any Tauri/runtime/window initialization.
+    // The packager reads these embedded bytes and never executes the program.
+    if std::env::args_os().skip(1).any(|arg| arg == "--build-info") {
+        use std::io::Write;
+        let _ = std::io::stdout().lock().write_all(env!("AUDIOPROCESS_DESKTOP_BUILD_INFO").as_bytes());
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(backend::BackendManager::default()))
@@ -121,8 +130,19 @@ fn main() {
         .manage(Arc::new(session_state::CloseCoordinator::default()))
         .manage(Arc::new(commands::ManualRunTracker::default()))
         .manage(Arc::new(workspace_file_commands::DropGrants::default()))
+        .manage(Arc::new(workspace_audio_stream::AudioStreams::default()))
+        .register_asynchronous_uri_scheme_protocol("audiopreview", workspace_audio_stream::protocol)
         .manage(Arc::new(plugin_manager::PluginManager::default()))
         .setup(|app| {
+            let cleanup_app=app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let streams=cleanup_app.state::<Arc<workspace_audio_stream::AudioStreams>>().inner().clone();
+                    let backend=cleanup_app.state::<Arc<backend::BackendManager>>().inner().clone();
+                    let _=tauri::async_runtime::spawn_blocking(move || streams.cleanup(&backend)).await;
+                }
+            });
             let manager = app.state::<Arc<backend::BackendManager>>();
             let captured = (|| {
                 let directory = app.path().app_config_dir().map_err(|error| error.to_string())?.join("plugins");
@@ -160,6 +180,7 @@ fn main() {
             ,conversation_commands::conversation_create
             ,conversation_commands::conversation_list
             ,conversation_commands::conversation_load
+            ,conversation_commands::conversation_delete
             ,run_records::run_records_list
             ,run_records::run_records_load
             ,run_records::run_records_check_files
@@ -179,8 +200,10 @@ fn main() {
             ,workflow_editor::workflow_editor_run
             ,workspace_browser::workspace_browser_list
             ,workspace_browser::workspace_browser_text
-            ,workspace_browser::workspace_browser_audio
+            ,workspace_audio_stream::workspace_audio_open
+            ,workspace_audio_stream::workspace_audio_close
             ,workspace_file_commands::workspace_files_mutate
+            ,workspace_clipboard::workspace_copy_path
             ,audio_conversion_commands::workspace_audio_convert
             ,audio_conversion_commands::workspace_audio_convert_cancel
             ,plugin_manager::plugin_manager_list
@@ -189,6 +212,11 @@ fn main() {
             ,plugin_manager::plugin_manager_uninstall
         ])
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let streams=window.state::<Arc<workspace_audio_stream::AudioStreams>>().inner().clone();
+                let label=window.label().to_owned();
+                tauri::async_runtime::spawn_blocking(move || streams.close_window(&label));
+            }
             if let tauri::WindowEvent::DragDrop(event) = event {
                 workspace_file_commands::native_drag(window,event);
             }
