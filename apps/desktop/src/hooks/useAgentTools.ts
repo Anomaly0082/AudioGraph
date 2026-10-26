@@ -44,6 +44,7 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
   const [conversationLoading, setConversationLoading] = useState(false);
   const [error, setError] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draftWorkspace = useRef<string | null>(null);
   const [attachGraph, setAttachGraph] = useState(true);
   const lock = useRef(false),
     mounted = useRef(true),
@@ -138,7 +139,12 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
     setConversations([]);
     setTurns([]);
     setWarnings([]);
-    setDrafts({});
+    // A reconnect changes sessionId even for the same directory. Preserve local
+    // unsent drafts across that interruption, but clear them on an actual switch.
+    if (connection && connection.workspace !== draftWorkspace.current) {
+      draftWorkspace.current = connection.workspace;
+      setDrafts({});
+    }
     setError("");
     if (request.current && request.current.sessionId !== connection?.sessionId)
       void invokeDesktop("agent_cancel", {
@@ -451,6 +457,9 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
       if (binding && matches(binding)) {
         const message = formatError(reason);
         setError(message);
+        // Recover the input even when the disconnected backend cannot read history.
+        // Keep this local; an uncertain request must never be replayed automatically.
+        setDrafts((old) => ({ ...old, [binding!.conversationId]: text }));
         setTurns((old) =>
           old.map((turn) =>
             turn.id === binding!.id
@@ -474,7 +483,6 @@ export function useAgentTools({ connection, settings, blocked }: Options) {
                 error: message,
               }).detail,
             );
-            setDrafts((old) => ({ ...old, [binding!.conversationId]: text }));
           }
         } catch {
           /* Keep explicit uncertainty; never replay the request. */

@@ -13,7 +13,7 @@ $plan = @(
     @{ name = 'build-info-data-tests'; tool = 'pwsh'; arguments = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'test-desktop-build-info.ps1')); directory = $repository }
 )
 if ($Headless) {
-    foreach ($name in @('workspace-files-interaction', 'conversation-input-performance', 'workbench-layout', 'conversation-delete')) {
+    foreach ($name in @('workspace-files-interaction', 'conversation-input-performance', 'workbench-layout', 'conversation-delete', 'conversation-recovery')) {
         $plan += @{ name = $name; tool = 'node'; arguments = @("tests/$name-smoke.mjs"); directory = $desktop }
     }
 }

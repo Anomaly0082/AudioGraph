@@ -2,7 +2,7 @@
 # Pure artifact inspection: this file never executes the inspected executable.
 function Read-DesktopEmbeddedBuildInfo {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Executable)
+    param([Parameter(Mandatory)][string]$Executable, [ValidateSet('debug','release')][string]$ExpectedProfile = 'debug')
     $begin = 'AUDIOPROCESS_DESKTOP_BUILD_INFO_V1_BEGIN'
     $end = 'AUDIOPROCESS_DESKTOP_BUILD_INFO_V1_END'
     # Latin-1 is a lossless one-byte mapping, so arbitrary PE bytes cannot cause
@@ -39,10 +39,10 @@ function Read-DesktopEmbeddedBuildInfo {
             $embedded.ValueKind -notin @([System.Text.Json.JsonValueKind]::True, [System.Text.Json.JsonValueKind]::False)) {
             throw 'Build metadata has an unsupported schema or invalid field types.'
         }
-        if ($buildProfileProperty.GetString() -cne 'debug' -or !$embedded.GetBoolean()) {
-            throw 'An embedded-frontend debug application is required. First run npm run tauri -- build --debug --no-bundle from apps/desktop; ordinary cargo build is not accepted.'
+        if ($buildProfileProperty.GetString() -cne $ExpectedProfile -or !$embedded.GetBoolean()) {
+            throw "An embedded-frontend $ExpectedProfile application is required. Build with the Tauri CLI; ordinary cargo build is not accepted."
         }
-        return [pscustomobject][ordered]@{ schema_version = 1; profile = 'debug'; frontend_embedded = $true }
+        return [pscustomobject][ordered]@{ schema_version = 1; profile = $ExpectedProfile; frontend_embedded = $true }
     } catch {
         throw "Cannot verify executable build metadata: $($_.Exception.Message)"
     } finally {

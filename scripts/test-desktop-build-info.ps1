@@ -57,6 +57,13 @@ try {
         trailing_json = "$begin$valid{}$end"
     }
     foreach ($case in $cases.GetEnumerator()) { Assert-Rejected (Write-Image "$($case.Key).exe" $case.Value) $case.Key }
+    $releaseImage = Join-Path $fixture 'release.exe'
+    if ((Read-DesktopEmbeddedBuildInfo -Executable $releaseImage -ExpectedProfile release).profile -cne 'release') { throw 'Embedded release was rejected.' }
+    $script:checks++
+    $rejectedDebug = $false
+    try { $null = Read-DesktopEmbeddedBuildInfo -Executable $path -ExpectedProfile release } catch { $rejectedDebug = $true }
+    if (!$rejectedDebug) { throw 'Release packaging accepted a debug executable.' }
+    $script:checks++
     # This sidecar deliberately contradicts the artifact, and has a later mtime.
     $marker = Join-Path $fixture 'desktop-build-mode.json'
     [IO.File]::WriteAllText($marker, '{"profile":"debug","frontend_embedded":false}')

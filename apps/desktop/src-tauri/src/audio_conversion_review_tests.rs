@@ -76,7 +76,8 @@ fn review_clean_path_relocated_bundle_child(){
 fn review_clean_path_relocated_chinese_bundle_works_without_machine_ffmpeg(){
     let f=Fixture::new();let executable=locate_ffmpeg(&f.spaces).unwrap();
     let manifest:Value=serde_json::from_slice(&fs::read(executable.parent().unwrap().parent().unwrap().join("bundle-provenance.json")).expect("only copy a prepared bundled runtime, never the machine's GPL-full FFmpeg")).unwrap();
-    assert_eq!(manifest["license"],"LGPL-3.0-or-later");assert!(manifest["variant"].as_str().unwrap().contains("lgpl-shared"));
+    assert_eq!(manifest["license"],"LGPL-2.1-or-later");assert_eq!(manifest["variant"],"windows-x64-audio-lgpl");
+    assert_eq!(manifest["redistribution_ready"],true);
     let package=f.root.join("中文 空格 搬移后的开发版");fs::create_dir(&package).unwrap();let bin=package.join("ffmpeg/bin");fs::create_dir_all(&bin).unwrap();
     // Copy only the actual shipped runtime, never discover another executable via PATH.
     let source_bin=executable.parent().unwrap();for item in fs::read_dir(source_bin).unwrap(){let item=item.unwrap();let name=item.file_name();let ext=item.path().extension().map(|v|v.to_string_lossy().to_ascii_lowercase());if matches!(ext.as_deref(),Some("exe"|"dll")){fs::copy(item.path(),bin.join(name)).unwrap();}}
@@ -119,9 +120,14 @@ fn review_real_corrupt_and_playlist_inputs_fail_without_output(){
 
 #[test]
 fn review_real_all_supported_containers_produce_pcm16_and_preserve_source(){
-    let f=Fixture::new();f.source("seed.wav",22050,1);let executable=locate_ffmpeg(&f.spaces).unwrap();
-    for(extension,encoder)in [("mp3","libmp3lame"),("m4a","aac"),("aac","aac"),("flac","flac"),("ogg","libvorbis"),("webm","libopus")]{
-        let source=format!("generated.{extension}");let mut cmd=Command::new(&executable);cmd.args(["-hide_banner","-nostdin","-loglevel","error","-n","-i"]).arg(f.spaces.user_root.join("seed.wav")).args(["-c:a",encoder]);if extension=="webm"{cmd.args(["-ar","48000"]);}let status=cmd.arg(f.spaces.user_root.join(&source)).stdin(Stdio::null()).output().unwrap();assert!(status.status.success(),"fixture encoder {encoder} unavailable: {}",String::from_utf8_lossy(&status.stderr));
+    let f = Fixture::new();
+    let inputs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio-input");
+    for name in ["aac.aac", "aac.m4a", "alac.m4a", "flac.flac", "mp3.mp3", "opus.ogg", "opus.webm", "pcm-f32.wav", "pcm-f64.wav", "pcm-s16.wav", "pcm-s24.wav", "pcm-s32.wav", "pcm-u8.wav", "vorbis.ogg", "vorbis.webm"] {
+        let name = name.to_string();
+        let extension = name.replace(".", "-");
+        let encoded = f.spaces.user_root.join(&name);
+        fs::copy(inputs.join(&name), &encoded).unwrap();
+        let source = name;
         let original=fs::read(f.spaces.user_root.join(&source)).unwrap();let target=format!("{extension}.wav");let result=f.run(&source,"ai",&target,ConversionOptions{sample_rate:Some(16000),channels:Some(1),..Default::default()}).unwrap();let wav=fs::read(f.spaces.ai_root.join(&target)).unwrap();assert_eq!(&wav[..4],b"RIFF");assert_eq!(&wav[8..12],b"WAVE");assert_eq!(u16::from_le_bytes(wav[20..22].try_into().unwrap()),1);assert_eq!(u16::from_le_bytes(wav[34..36].try_into().unwrap()),16);assert_eq!(result["sample_rate"],16000);assert_eq!(result["channels"],1);assert!(result["frames"].as_u64().unwrap()>1000);assert_eq!(fs::read(f.spaces.user_root.join(&source)).unwrap(),original);f.clean();
     }
 }

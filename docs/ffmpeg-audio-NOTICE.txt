@@ -1,0 +1,28 @@
+AudioGraph includes FFmpeg and LAME as separate, replaceable programs/libraries.
+FFmpeg is copyright the FFmpeg developers and contributors; this audio-only
+build uses LGPL version 2.1 or later. LAME is copyright its respective authors;
+its COPYING and LICENSE documents are preserved in licenses/LAME. The LAME
+decoder/frontend are disabled. No GPL/nonfree FFmpeg features are enabled.
+
+FFmpeg: https://ffmpeg.org/
+LAME: https://lame.sourceforge.io/
+
+Full matching application-library sources, build recipes, configuration and
+build records accompany this folder in sources/ffmpeg-audio-sources.zip.
+See licenses/ for verbatim license and attribution documents. This distribution
+also contains or uses MinGW runtime components and GCC target runtime code;
+the applicable notices and GCC Runtime Library Exception are included there.
+
+The sources, notices and binaries form one distribution unit. If you publish
+binary downloads, make the matching sources available alongside them at the
+same download location. Do not substitute source materials from another build.
+
+You may modify and replace these separately supplied components with compatible
+versions and exercise the reverse-engineering/relinking rights granted by their
+licenses. AudioGraph does not enforce hashes on these components at runtime.
+Preparation-time hashes identify what was built and packaged, not a restriction
+on those rights. These components are supplied WITHOUT ANY WARRANTY; see their
+individual license texts for the applicable terms.
+
+FFmpeg is a trademark of Fabrice Bellard. This notice covers the bundled audio
+conversion components; other AudioGraph components have their own terms.

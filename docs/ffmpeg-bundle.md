@@ -1,11 +1,17 @@
-# 本地自带 FFmpeg 开发版
+# FFmpeg 随附运行库
+
+当前构建入口已改为 [音频精简版](ffmpeg-audio-build.md)：固定 FFmpeg/LAME 源码自行编译，运行库、源码包和声明一起随应用携带。开发者执行 `scripts/prepare-ffmpeg.ps1`；用户不需要配置 FFmpeg。旧 BtbN 锁、缓存和审查报告只用于保留历史来源。
+
+## 旧全量包记录（历史）
+
+以下描述对应替换前的全量开发包；其中的准备命令属于旧脚本行为，当前命令和分发状态以上方音频精简说明为准。
 
 当前固定使用 BtbN `autobuild-2026-10-22-13-06` 的
 `ffmpeg-n8.1.3-23-g5c4f5744cd-win64-lgpl-shared-8.1.zip`。
 实际运行 `-L` 确认为 **LGPL-3.0-or-later**；`-buildconf` 确认 shared、未启用 GPL/nonfree。
 此处没有使用本机 PATH 上的 GPL full_build。
 
-当前用户选择暂不获取完整依赖源码，只保留本地开发版。
+2026-10-25 已取得并校验匹配的依赖源码缓存；依赖对应关系和许可证整理仍未完成，当前仍是本地开发版。
 `bundle-provenance.json` 的 `redistribution_ready` 保持 `false`。
 标准 release 构建及分发脚本会拒绝继续；这不代表能阻止用户自行复制 debug 程序。
 
@@ -43,18 +49,22 @@ npm run tauri -- build --debug --no-bundle
 
 ## 尚缺的分发材料
 
-已缓存精确 FFmpeg revision 与 BtbN 构建脚本压缩包；但完整依赖源码仍未取得。
-官方匹配该次构建的 `download-cache` Actions ZIP 大小为 2,210,375,345 字节。
-连接器限制单资产 512 MiB，匿名下载返回 401；本轮没有分段绕过限制、获取凭据或下载此大件。
+2026-10-25 已完成现有材料清点，见 [源码与许可证核对报告](ffmpeg-source-review.md)。实际作业引用的 86 个源码缓存均已找到，声明原文已归档；仍缺 rav1e 构建时更新后的准确 Rust 依赖材料等，正式分发门禁保持关闭。
 
-未来若决定继续，使用已授权的 GitHub 登录下载：
+已缓存精确 FFmpeg revision、BtbN 构建脚本压缩包及匹配的依赖源码缓存。
+官方匹配该次构建的 `download-cache` Actions ZIP 大小为 2,210,375,345 字节。
+该 ZIP 由用户通过浏览器下载，已复制到 `build/ffmpeg-cache/download-cache.zip`，保留下载目录原文件。实际 SHA-256 与下方固定值完全一致。
+
+只读检查显示 ZIP 只有 `cache.tar.gz` 一个条目，内层 tar 清单有 258 个依赖缓存条目；这次校验没有运行归档内代码，也没有执行恶意软件扫描。校验收据及检查目录记录位于忽略的 `build/ffmpeg-cache/source-intake.json`。哈希匹配证明文件与锁定下载一致，不等于证明上游内容无恶意行为。
+
+需要重新取得同一缓存时，使用已授权的 GitHub 登录下载：
 
 [匹配的完整依赖源码 artifact](https://github.com/BtbN/FFmpeg-Builds/actions/runs/39776938430/artifacts/12424698518)
 
 将原始 ZIP 放在 `build/ffmpeg-cache/download-cache.zip`，预期 SHA-256 为
 `f89c6c43969d92c8b95cb459a90fbafbc743d3d3cc4d16c610317f9ceef922f8`。
 该 artifact 公布的失效时间为 2026-11-05；如失效，不能用最新依赖源码冒充对应版本。
-取得缓存之后仍需核对实际依赖版本、补全各依赖许可证/NOTICE、构建脚本与 patch，
+接下来仍需核对实际依赖版本、补全各依赖许可证/NOTICE、构建脚本与 patch，
 并将真实源码包与二进制包一起分发；仅有 URL 或 FFmpeg 本身源码不够。
 目前准备脚本不会自动宣告完成此审查。
 

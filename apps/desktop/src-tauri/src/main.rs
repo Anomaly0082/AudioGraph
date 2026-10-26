@@ -24,6 +24,12 @@ mod workspace_clipboard;
 mod audio_conversion;
 mod audio_conversion_commands;
 mod ffmpeg_bundle;
+#[cfg(test)]
+#[path = "../ffmpeg_distribution.rs"]
+mod ffmpeg_distribution_tests;
+#[cfg(test)]
+#[path = "../build_resources.rs"]
+mod build_resources_tests;
 mod plugin_snapshot;
 mod plugin_manager;
 mod run_records;

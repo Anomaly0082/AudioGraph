@@ -1,4 +1,23 @@
-# 当前构建与分发分析
+# 构建与分发分析
+
+2026-10-25 更新：当前已改用固定源码的音频精简 FFmpeg，构建方法与源许可材料见[音频精简构建](ffmpeg-audio-build.md)。`package-desktop.ps1` 可整理内嵌前端的 Release 便携目录，`-LocalDevelopmentOnly` 则整理 Debug 体验目录；两者均核验并携带 FFmpeg 源码包。NSIS/MSI 安装器尚未启用。以下数值保留为替换前的测量记录，不代表新包体积。
+
+## 音频精简版实测（2026-10-25）
+
+| 项目 | 字节 | MiB |
+| --- | ---: | ---: |
+| FFmpeg/FFprobe、5 个 FFmpeg DLL、LAME、winpthreads | 7,912,497 | 7.55 |
+| FFmpeg 完整目录（含匹配源码 ZIP、许可与构建记录） | 33,365,430 | 31.82 |
+| 当前 Debug 体验目录（含主程序及 C++ 后端） | 69,594,326 | 66.37 |
+| Debug 体验目录 ZIP | 41,341,789 | 39.43 |
+
+测量产物：`build/AudioProcess-audio-development-20261025/` 及同名 ZIP。这是 Debug 体验包，不是 NSIS/MSI 安装器；没有混入整个 target 目录、PDB、旧 FFmpeg 备份或可选 ASR 插件。运行程序仍使用原路径 `apps/desktop/src-tauri/target/debug/audioprocess-prototype.exe`。
+
+原全量包 FFmpeg 目录约 159.89 MiB，新版连源码及声明约 31.82 MiB。源码单独 ZIP 为 25,264,019 字节，已放入随附 FFmpeg 目录，无需另找 2 GiB 的上游缓存来陪同这个新构建分发。
+
+已验证：211 个原有内置音频解码器保留、4 个输出编码器、15 个输入 fixture、16 种互转、中文路径及清空 PATH 运行；Rust 305 项通过（14 项显式 opt-in 忽略），另单独通过真实工具适配层→Workflow→C++ Graph→导出测试。桌面 Debug 构建和整包材料校验成功，全程未启动桌面窗口或调用在线模型。
+
+## 旧全量包测量记录
 
 测量日期：2026-10-24。当前是Windows x64本地开发版，不是已经完成许可审查的正式发布包。
 

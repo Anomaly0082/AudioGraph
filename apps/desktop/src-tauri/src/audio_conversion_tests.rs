@@ -56,15 +56,13 @@ fn pcm_output_is_classic_tag_one_and_preserves_high_rate_samples() {
 
 #[test]
 fn local_compressed_formats_decode_without_modifying_sources() {
-    let f = Fixture::new(); let source = f.wav("original.wav", 16000, 1, 1600);
-    let executable = locate_ffmpeg(&f.spaces).unwrap();
-    for (extension, codec) in [("mp3", "libmp3lame"), ("m4a", "aac"), ("aac", "aac"), ("flac", "flac"), ("ogg", "libvorbis"), ("webm", "libopus")] {
-        let name = format!("sample.{extension}"); let encoded = f.spaces.user_root.join(&name);
-        let mut encode = Command::new(&executable);
-        #[cfg(windows)] { use std::os::windows::process::CommandExt; encode.creation_flags(0x08000000); }
-        let result = encode.args(["-hide_banner", "-nostdin", "-loglevel", "error", "-n", "-i"]).arg(&source)
-            .args(["-c:a", codec]).arg(&encoded).stdin(Stdio::null()).output().unwrap();
-        assert!(result.status.success(), "fixture {extension}: {}", String::from_utf8_lossy(&result.stderr));
+    let f = Fixture::new();
+    let inputs = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audio-input");
+    for name in ["aac.aac", "aac.m4a", "alac.m4a", "flac.flac", "mp3.mp3", "opus.ogg", "opus.webm", "pcm-f32.wav", "pcm-f64.wav", "pcm-s16.wav", "pcm-s24.wav", "pcm-s32.wav", "pcm-u8.wav", "vorbis.ogg", "vorbis.webm"] {
+        let name = name.to_string();
+        let extension = name.replace(".", "-");
+        let encoded = f.spaces.user_root.join(&name);
+        fs::copy(inputs.join(&name), &encoded).unwrap();
         let before = fs::read(&encoded).unwrap();
         let result = f.convert(&name, &format!("{extension}.wav"), ConversionOptions::default()).unwrap();
         assert_eq!(result["encoding"], "pcm_s16le"); assert!(result["frames"].as_u64().unwrap() > 0);

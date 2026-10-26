@@ -31,5 +31,5 @@
     "api_url": "https://api.github.com/repos/BtbN/FFmpeg-Builds/actions/artifacts/12424698518/zip",
     "expires_at": "2026-11-05T12:16:05Z"
   },
-  "status": "runtime verified as LGPL-3.0-or-later/shared; matching dependency sources and notice review incomplete; local development only"
+  "status": "runtime verified as LGPL-3.0-or-later/shared; all 86 job-referenced cache archives mapped and source notices collected; historical rav1e Cargo inputs and target runtime notice review remain unresolved; local development only"
 }
