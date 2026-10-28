@@ -3,7 +3,9 @@
 param(
     [switch]$LocalDevelopmentOnly,
     [string]$Executable,
-    [string]$Destination
+    [string]$Destination,
+    [string]$ReleaseSidecar,
+    [string]$VcRedistDirectory
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -23,6 +25,16 @@ $destinationPath = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $destinationPath) { throw 'Local development destination already exists; choose a new directory. Nothing was overwritten.' }
 $sidecar = Join-Path (Split-Path -Parent $executablePath) 'control-cli.exe'
 if (!(Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw 'Required control-cli.exe sidecar is missing; no local copy was created.' }
+if (!$LocalDevelopmentOnly) {
+    if (!$ReleaseSidecar) { $ReleaseSidecar = Join-Path $repository 'build/Release/control-cli.exe' }
+    if (!(Test-Path -LiteralPath $ReleaseSidecar -PathType Leaf)) { throw 'Build the C++ Release sidecar first, or pass -ReleaseSidecar from that build.' }
+    $releaseSidecarHash = (Get-FileHash -LiteralPath $ReleaseSidecar -Algorithm SHA256).Hash
+    if ((Get-FileHash -LiteralPath $sidecar -Algorithm SHA256).Hash -cne $releaseSidecarHash) {
+        throw 'Adjacent sidecar differs from the C++ Release build; rebuild/copy the Release sidecar before packaging.'
+    }
+    . (Join-Path $PSScriptRoot 'windows-release-runtime.ps1')
+    $VcRedistDirectory = Find-ReleaseVcRuntime -Directory $VcRedistDirectory
+}
 . (Join-Path $PSScriptRoot 'desktop-build-info.ps1')
 $buildMode = Read-DesktopEmbeddedBuildInfo -Executable $executablePath -ExpectedProfile $expectedProfile
 foreach ($file in $provenance.files) {
@@ -38,6 +50,11 @@ Copy-Item -LiteralPath $executablePath -Destination (Join-Path $destinationPath 
 # marker from the actual copied artifact, and never bless a stale preflight.
 $buildMode = Read-DesktopEmbeddedBuildInfo -Executable (Join-Path $destinationPath $applicationName) -ExpectedProfile $expectedProfile
 Copy-Item -LiteralPath $sidecar -Destination (Join-Path $destinationPath 'control-cli.exe')
+if (!$LocalDevelopmentOnly) {
+    if ((Get-FileHash -LiteralPath (Join-Path $destinationPath 'control-cli.exe') -Algorithm SHA256).Hash -cne $releaseSidecarHash) { throw 'Copied Release sidecar changed during packaging.' }
+    $crt = Copy-ReleaseVcRuntime -Directory $VcRedistDirectory -Destination $destinationPath
+    $crt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $destinationPath 'microsoft-crt.json') -Encoding utf8NoBOM
+}
 $buildMode | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $destinationPath 'desktop-build-mode.json') -Encoding utf8NoBOM
 Copy-Item -LiteralPath $runtime -Destination (Join-Path $destinationPath 'ffmpeg') -Recurse
 Assert-FfmpegAudioDistribution -Root (Join-Path $destinationPath 'ffmpeg') | Out-Null
@@ -47,6 +64,8 @@ AudioProcess portable application
 Run the included application EXE. Keep control-cli.exe and the complete ffmpeg
 folder beside it. No local Vite server or separately configured FFmpeg is needed.
 Windows WebView2 Runtime is a prerequisite of the Tauri desktop shell.
+Release packages include the unmodified Microsoft x64 release CRT beside the
+application; see MICROSOFT-CRT-NOTICE.txt. Debug copies are developer builds.
 
 The ffmpeg folder includes matching FFmpeg/LAME sources in
 ffmpeg/sources/ffmpeg-audio-sources.zip, original licenses and NOTICE.txt.
