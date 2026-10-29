@@ -10,6 +10,8 @@ import {
 } from "../types/plugin-manager";
 
 export type PluginManagerServices = {
+  restartApp?: () => Promise<void>;
+  restartBlockedReason?: () => string | null;
   invoke: <T>(command: string, args: Record<string, unknown>) => Promise<T>;
   chooseDirectory: () => Promise<string | null>;
   confirm: (
@@ -88,6 +90,29 @@ export function createPluginManagerController(
     if (token === operationToken)
       update({ busy: false, operation: null });
   }
+  async function restart(): Promise<boolean> {
+    const token = begin("restart");
+    if (token === null) return false;
+    try {
+      if (!services.restartApp) throw new Error("当前环境不支持自动重启。");
+      const blocked = services.restartBlockedReason?.();
+      if (blocked) throw new Error(blocked);
+      if (!(await services.confirm(
+        "保存 Graph / Workflow 草稿并重启以加载插件？工作区会恢复，未发送的聊天输入不会保留。",
+        "重启并加载插件",
+      ))) return false;
+      // A task may have started while the confirmation was open.
+      const changed = services.restartBlockedReason?.();
+      if (changed) throw new Error(changed);
+      await services.restartApp();
+      return true;
+    } catch (reason) {
+      update({ error: `无法重启：${formatError(reason)}` });
+      return false;
+    } finally {
+      end(token);
+    }
+  }
   async function install(): Promise<boolean> {
     const token = begin("install");
     if (token === null) return false;
@@ -105,7 +130,7 @@ export function createPluginManagerController(
         { sourceDirectory, trusted: true },
       );
       acceptView(view);
-      update({ notice: "插件已安装。重启软件后按启用状态加载。" });
+      update({ notice: "插件已安装，点击“重启并加载插件”生效。" });
       return true;
     } catch (reason) {
       update({ error: `安装插件失败：${formatError(reason)}` });
@@ -224,6 +249,7 @@ export function createPluginManagerController(
     setEnabled,
     uninstall,
     cancelUninstall,
+    restart,
   };
 }
 
@@ -248,6 +274,7 @@ export function usePluginManager(
     setEnabled: controller.current.setEnabled,
     uninstall: controller.current.uninstall,
     cancelUninstall: controller.current.cancelUninstall,
+    restart: controller.current.restart,
   };
 }
 

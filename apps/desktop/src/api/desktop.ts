@@ -25,8 +25,8 @@ export function listenWorkspaceFileDrop(callback: (event: WorkspaceFileDrop) => 
 export function listenSessionClose(callback: (requestId: string) => void): Promise<() => void> {
   return listen<{ requestId: string }>("session-state-close-requested", event => callback(event.payload.requestId));
 }
-export function listenSessionCloseCancelled(callback: (requestId: string) => void): Promise<() => void> {
-  return listen<{ requestId: string }>("session-state-close-cancelled", event => callback(event.payload.requestId));
+export function listenSessionCloseCancelled(callback: (requestId: string, error?: string) => void): Promise<() => void> {
+  return listen<{ requestId: string; error?: string }>("session-state-close-cancelled", event => callback(event.payload.requestId, event.payload.error));
 }
 export const invokeDesktop = <T>(
   command: string,

@@ -17,6 +17,14 @@ pub struct ManualRunTracker {
     uncertain_starts: Mutex<HashSet<String>>,
 }
 impl ManualRunTracker {
+    pub(crate) fn with_restart_idle<T>(&self,action: impl FnOnce()->Result<T,String>)->Result<T,String> {
+        let _lease=self.operations.try_lock().map_err(|_| "任务或文件操作尚未完成")?;
+        if !self.uncertain_starts.lock().map_err(|_| "任务状态锁不可用")?.is_empty()
+            || !self.tasks.lock().map_err(|_| "任务状态锁不可用")?.is_empty() {
+            return Err("音频任务尚未完成收尾，请先停止或等待任务结束".into());
+        }
+        action()
+    }
     pub(crate) fn with_files_idle<T>(&self, session: &str, action: impl FnOnce() -> Result<T,String>) -> Result<T,String> {
         let _lease = self.operations.lock().map_err(|_| "文件操作锁不可用")?;
         if self.uncertain_starts.lock().map_err(|_| "任务状态锁不可用")?.contains(session)

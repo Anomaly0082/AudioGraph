@@ -328,6 +328,16 @@ impl Default for BackendManager {
 }
 
 impl BackendManager {
+    // Keep the same lifecycle -> manual-operation lock order as file mutations.
+    // Reserve shutdown while task starts are excluded, without cancelling work.
+    pub(crate) fn prepare_restart(&self,tracker: &crate::commands::ManualRunTracker)->Result<(),String> {
+        let _lease=self.lifecycle.try_lock().map_err(|_| "工作区操作尚未完成")?;
+        tracker.with_restart_idle(|| {
+            self.closing.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire)
+                .map_err(|_| "应用正在关闭")?;
+            Ok(())
+        })
+    }
     // Pin the selected session for a manual disk operation; reconnect/close waits.
     pub(crate) fn with_workspace_operation<T>(&self, session_id: &str, action: impl FnOnce(&Path) -> Result<T,String>) -> Result<T,String> {
         let _lease = self.lifecycle.lock().map_err(|_| "工作区操作锁不可用")?;
@@ -410,6 +420,7 @@ impl BackendManager {
     }
 
     pub fn request(&self, session_id: &str, request: Value) -> Result<Value, String> {
+        if self.closing.load(Ordering::Acquire) { return Err("窗口正在关闭".into()); }
         let connection = self.selected(session_id)?;
         match connection.request(request) {
             Err(message) if connection.shared.alive.load(Ordering::Acquire) => {

@@ -19,6 +19,8 @@ import type { SessionState } from "../session-state-model";
 import type { Connection, GraphSubmission } from "../types/desktop";
 import { isCurrentValidationResponse } from "../workflow-model";
 import { initialCanvasView, type CanvasView } from "../graph-canvas-layout";
+import { createGraphHistory } from "../graph-edit-history";
+import { copyGraphSelection, pasteGraphSelection } from "../graph-clipboard";
 import { editorModified, editorWorkspaceContext, transitionEditorWorkspace, sameGraphContent, savedEditorSource, sourceForContext, type EditorSource, type EditorWorkspace } from "../editor-source-model";
 
 const initialGraph = JSON.stringify(createTemplate("text").graph, null, 2);
@@ -28,7 +30,11 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
   const [template, setTemplate] = useState<TemplateKind>("text");
   const [graphText, setGraphText] = useState(initialGraph);
   // Layout is presentation-only: never serialize it into the executable Graph.
-  const [canvasView, setCanvasView] = useState<CanvasView>(initialCanvasView);
+  const [canvasView, setCanvasViewState] = useState<CanvasView>(initialCanvasView);
+  const history = useRef(createGraphHistory({ text: initialGraph, view: initialCanvasView() }));
+  const clipboard = useRef<ReturnType<typeof copyGraphSelection> | null>(null);
+  const [canPaste, setCanPaste] = useState(false);
+  const pasteCount = useRef(0);
   const [fileLabel, setFileLabel] = useState("未保存的 Graph");
   const [, setSource] = useState<EditorSource | null>(null);
   const sourceRef = useRef<EditorSource | null>(null);
@@ -54,8 +60,7 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
   function replaceGraph(value: string, label = "未保存的 Graph") {
     ++originEpoch.current;
     bindSource(null);
-    editGraph(value);
-    setCanvasView(initialCanvasView());
+    applySnapshot(history.current.reset({ text: value, view: initialCanvasView() }));
     setFileLabel(label);
   }
   const [blockFrames, setBlockFramesState] = useState("256");
@@ -77,6 +82,8 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
     if (previousFileContext.current === fileContext) return;
     previousFileContext.current = fileContext;
     setFileLabel("未保存的 Graph（工作区已变化）");
+    applySnapshot(history.current.reset(history.current.current));
+    clipboard.current = null; setCanPaste(false);
   }, [fileContext]);
   const validationKey = JSON.stringify([
     sessionId,
@@ -99,10 +106,41 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
     }
   }, [graphText]);
 
-  function editGraph(value: string) {
-    contentRef.current = value;
-    setGraphText(value);
+  function applySnapshot(value: { text: string; view: CanvasView }) {
+    contentRef.current = value.text;
+    setGraphText(value.text);
+    setCanvasViewState(value.view);
     setValidatedKey(null);
+  }
+  function editGraph(value: string, nextView?: CanvasView, group?: string) {
+    applySnapshot(history.current.commit({ text: value, view: nextView ?? history.current.current.view }, group));
+  }
+  function setCanvasView(value: CanvasView, group?: string) {
+    const current = history.current.current;
+    if (JSON.stringify(current.view.positions) !== JSON.stringify(value.positions)) {
+      const snapshot = history.current.commit({ text: current.text, view: value }, group);
+      setCanvasViewState(snapshot.view);
+    } else {
+      setCanvasViewState(history.current.replaceView(value).view);
+    }
+  }
+  function undo() { if (!fileBusy.current) applySnapshot(history.current.undo()); }
+  function redo() { if (!fileBusy.current) applySnapshot(history.current.redo()); }
+  function copyNodes(ids: string[], positions: CanvasView["positions"]) {
+    const graph = parseGraph(contentRef.current, { allowEmpty: true });
+    if (!ids.some(id => graph.nodes.some(node => node.id === id))) return;
+    clipboard.current = copyGraphSelection(graph, ids, positions);
+    pasteCount.current = 0;
+    setCanPaste(true);
+  }
+  function pasteNodes(positions: CanvasView["positions"]): string[] {
+    if (!clipboard.current || fileBusy.current) return [];
+    const pasted = pasteGraphSelection(parseGraph(contentRef.current, { allowEmpty: true }), clipboard.current, positions, 32 * (pasteCount.current + 1));
+    const text = JSON.stringify(pasted.graph, null, 2);
+    parseGraph(text, { allowEmpty: true });
+    editGraph(text, { ...history.current.current.view, positions: pasted.positions, selectedId: pasted.selectedIds[0] ?? "" });
+    pasteCount.current++;
+    return pasted.selectedIds;
   }
   function setMode(value: Mode) {
     setModeState(value);
@@ -256,7 +294,7 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
       workspaceRef.current = owner;
       previousFileContext.current = editorWorkspaceContext(owner);
       bindSource(value.source ? { path: value.source.path, revision: value.source.revision, content: value.source.content, context: editorWorkspaceContext(transitionEditorWorkspace({ workspace: null, scope: "" }, null, value.source.workspace).owner) } : null);
-      editGraph(value.text); setModeState(value.mode); setBlockFramesState(value.blockFrames); setDurationState(value.duration); setCanvasView(value.canvasView); setProbeState(true); setValidatedKey(null);
+      applySnapshot(history.current.reset({ text: value.text, view: value.canvasView })); setModeState(value.mode); setBlockFramesState(value.blockFrames); setDurationState(value.duration); setProbeState(true); setValidatedKey(null);
       setFileLabel(value.source?.path ?? "恢复的 Graph 草稿");
     },
     mode,
@@ -267,6 +305,8 @@ export function useGraphDraft(sessionId: string | null, workspace = "") {
     canvasView,
     setCanvasView,
     editGraph,
+    undo, redo, canUndo: history.current.canUndo, canRedo: history.current.canRedo,
+    copyNodes, pasteNodes, canPaste,
     replaceGraph,
     fileLabel,
     modified: editorModified(sourceForContext(sourceRef.current, fileContext), graphText),

@@ -18,6 +18,8 @@ const MAX_PROMPT_BYTES: usize = 16 * 1024;
 
 #[path = "agent_feedback.rs"]
 mod feedback;
+#[path = "agent_progress.rs"]
+mod progress;
 
 #[derive(Serialize)]
 pub struct AgentEvent {
@@ -133,6 +135,12 @@ impl AgentManager {
         if let Some(active) = &inner.active { active.cancel.store(true, Ordering::Release); }
     }
     pub fn reopen(&self) { self.inner.lock().unwrap().closing = false; }
+    pub(crate) fn prepare_restart(&self) -> Result<(),String> {
+        let mut inner=self.inner.try_lock().map_err(|_| "AI / Workflow 操作尚未完成")?;
+        if inner.active.is_some() || inner.closing { return Err("请先结束 AI / Workflow 任务，再重启".into()); }
+        inner.closing=true;
+        Ok(())
+    }
     pub fn wait_idle(&self, timeout: Duration) -> Result<(),String> {
         let guard = self.inner.lock().unwrap();
         let (guard,_) = self.idle.wait_timeout_while(guard, timeout, |inner| inner.active.is_some())
@@ -278,6 +286,10 @@ fn body(model: &str, history: &VecDeque<Vec<Value>>, current: &[Value], mode: &s
             messages[0]["content"] = json!(format!("{system}{result_hint}{numeric_hint}{selection_hint}"));
         }
     }
+    let policy = " Preserve the user's requested processing order. If that order violates a node's input constraints, explain the conflict and ask before reordering. For long audio, graph_run defaults to 300000 ms and accepts timeout_ms from 1000 to 1800000; Workflow still has its own total deadline (maximum 300000 ms). Do not create a Workflow just to bypass a timeout. Inspect only relevant input metadata and node requirements, then execute the requested pipeline. Use already-returned errors/results rather than repeatedly fetching history or inspecting unrelated audio. A short-file test does not complete the user's long-file request. After failure make a targeted correction; do not repeat unchanged failed calls. Summarize confirmed outputs and remaining work when blocked. Respond in the user's language.";
+    if let Some(system) = messages[0]["content"].as_str() {
+        messages[0]["content"] = json!(format!("{system}{policy}"));
+    }
     for prior in history { messages.extend(prior.iter().cloned()); }
     messages.extend(current.iter().cloned());
     json!({"model":model.trim(),"stream":false,"tool_choice":"auto","tools":agent_tools::definitions(mode),"messages":messages})
@@ -329,16 +341,19 @@ async fn run_turn(manager: &AgentManager, ai: Arc<AiManager>, backend: Arc<Backe
     let mut pending_ids: Vec<String> = Vec::new();
     let mut used_tool_ids = HashSet::new();
     let mut persistence_failed = false;
+    let mut failures = progress::FailureGuard::default();
+    let mut unexecuted = 0;
     'rounds: for _ in 0..MAX_MODEL_CALLS {
         if cancel.load(Ordering::Acquire) { final_state = "cancelled"; final_text = "Agent turn cancelled".into(); break; }
         if backend.workspace(&session).is_err() { final_text = "The connected workspace session has ended".into(); break; }
         let request_body = loop {
-            let candidate = body(&config.model,&history,&current,&mode);
+            let mut candidate = body(&config.model,&history,&current,&mode);
+            progress::budget_notice(&mut candidate,result.model_calls,result.tool_calls);
             let size = serde_json::to_vec(&candidate).map(|b| b.len()).unwrap_or(usize::MAX);
             if size <= MAX_BODY_BYTES { break candidate; }
             if history.pop_front().is_none() {
                 final_state = "limited";
-                final_text = "Agent context exceeds the 128 KiB request limit".into();
+                final_text = "上下文达到 128 KiB 请求上限".into();
                 break 'rounds;
             }
         };
@@ -367,7 +382,8 @@ async fn run_turn(manager: &AgentManager, ai: Arc<AiManager>, backend: Arc<Backe
             break;
         }
         if raw_calls.len() > MAX_TOOL_CALLS - result.tool_calls {
-            final_state = "limited"; final_text = format!("Agent reached the {MAX_TOOL_CALLS} tool call limit"); break;
+            unexecuted = raw_calls.len();
+            final_state = "limited"; final_text = format!("达到 {MAX_TOOL_CALLS} 次工具调用上限，新的调用批次未执行"); break;
         }
         let mut calls = Vec::with_capacity(raw_calls.len());
         for call in raw_calls {
@@ -404,6 +420,11 @@ async fn run_turn(manager: &AgentManager, ai: Arc<AiManager>, backend: Arc<Backe
                     else { crate::graph_files::strict_json(arguments.as_bytes()).map_err(|_| "Tool arguments are invalid JSON or contain duplicate keys".to_owned()) }
                 } else { Err("Tool arguments must be a JSON string".into()) };
             let arguments = parsed.as_ref().ok().cloned();
+            if arguments.as_ref().is_some_and(|args| failures.blocked(&name,args)) {
+                final_state = "limited";
+                final_text = format!("工具 {} 使用相同参数已失败两次，且尚无成功的修复操作，已停止第三次重复调用", name);
+                break 'rounds;
+            }
             // Commit an intent before allowing any dispatch, including a Workflow that owns
             // several side effects. A failed checkpoint prevents this and all later tools.
             if let Some(guard) = conversation.as_mut() {
@@ -421,6 +442,7 @@ async fn run_turn(manager: &AgentManager, ai: Arc<AiManager>, backend: Arc<Backe
             result.tool_calls += 1;
             let (mut envelope,success) = tool_envelope(&name,outcome);
             tools.sanitize_model_value(&mut envelope);
+            failures.observe_receipt(&name,arguments.as_ref(),success,&envelope);
             collect_run_ids(&envelope,&mut result.run_ids);
             let model_receipt = feedback::model_receipt(&name, &envelope);
             result.events.push(AgentEvent::tool(name,arguments,envelope.clone(),success));
@@ -436,11 +458,15 @@ async fn run_turn(manager: &AgentManager, ai: Arc<AiManager>, backend: Arc<Backe
             if cancel.load(Ordering::Acquire) { final_state = "cancelled"; final_text = "Agent turn cancelled; completed file changes remain".into(); break 'rounds; }
         }
     }
+    unexecuted += pending_ids.len();
     for id in pending_ids.drain(..) {
         let envelope = json!({"ok":false,"error":"Turn stopped before this tool call executed"});
         current.push(json!({"role":"tool","tool_call_id":id,"content":envelope.to_string()}));
     }
-    if final_text.is_empty() { final_state = "limited"; final_text = format!("Agent reached the {MAX_MODEL_CALLS} model request limit"); }
+    if final_text.is_empty() { final_state = "limited"; final_text = format!("达到 {MAX_MODEL_CALLS} 次模型请求上限"); }
+    if final_state == "limited" {
+        final_text = progress::stop_summary(&final_text,&result.events,result.model_calls,result.tool_calls,unexecuted);
+    }
     if let Err(error) = tools.shutdown().await {
         final_state = "failed";
         final_text = format!("{final_text}. AI backend cleanup failed: {error}");

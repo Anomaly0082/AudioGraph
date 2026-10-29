@@ -42,14 +42,6 @@ export default function App() {
   const recoveryBlockedRef = useRef(true);
   const rememberedWorkspace = useRef<string | null>(null);
   const session = useAudioSession();
-  const plugins = usePluginManager(
-    {
-      invoke: invokeDesktop,
-      chooseDirectory: choosePluginDirectory,
-      confirm: confirmDesktop,
-    },
-    session.desktop,
-  );
   const draft = useGraphDraft(session.connection?.sessionId ?? null, session.connection?.workspace ?? "");
   const settings = useAiSettings(invokeDesktop);
   const agent = useAgentTools({
@@ -129,6 +121,25 @@ export default function App() {
     }
   });
   recoveryBlockedRef.current = !recovery.ready || recovery.closing;
+  const plugins = usePluginManager({
+    invoke: invokeDesktop,
+    chooseDirectory: choosePluginDirectory,
+    confirm: confirmDesktop,
+    restartApp: async () => {
+      recoveryBlockedRef.current = true;
+      try { await invokeDesktop<void>("session_state_restart"); }
+      catch (reason) { recoveryBlockedRef.current = false; throw reason; }
+    },
+    restartBlockedReason: () => {
+      if (recoveryBlockedRef.current || recovery.disabled) return "请先完成编辑状态恢复，再重启。";
+      if (agent.readBusy() || workflowBusyRef.current() || session.readTaskBlocked())
+        return "请先停止或等待当前 AI / 音频任务完成。";
+      if (fileMutationRef.current() || viewBusyRef.current || session.readBusy() || settings.settingsBusy || settings.settingsLoading)
+        return "当前操作尚未完成，请稍后重启。";
+      if (settings.configStatus === "有未保存的修改") return "请先保存模型配置，再重启。";
+      return null;
+    },
+  }, session.desktop);
   const goWorkbench = () => {
     setPage("workbench");
   };

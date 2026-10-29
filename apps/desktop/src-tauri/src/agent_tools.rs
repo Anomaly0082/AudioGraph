@@ -13,7 +13,29 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::{Duration, Instant};
 
-const GRAPH_TIMEOUT: Duration = Duration::from_secs(60);
+const GRAPH_VALIDATE_TIMEOUT: Duration = Duration::from_secs(60);
+const GRAPH_DEFAULT_TIMEOUT_MS: u64 = 300_000;
+const GRAPH_MAX_TIMEOUT_MS: u64 = 1_800_000;
+
+fn graph_timeout_ms(args: &Value) -> Result<u64,String> {
+    match args.get("timeout_ms") {
+        None => Ok(GRAPH_DEFAULT_TIMEOUT_MS),
+        Some(value) => value.as_u64().filter(|n| (1_000..=GRAPH_MAX_TIMEOUT_MS).contains(n))
+            .ok_or_else(|| "graph_run timeout_ms must be an integer from 1000 to 1800000 milliseconds".into()),
+    }
+}
+
+fn graph_budget(now: Instant, timeout_ms: u64, workflow_deadline: Option<Instant>) -> (Instant,u64) {
+    let deadline = workflow_deadline.map_or(now + Duration::from_millis(timeout_ms),
+        |outer| (now + Duration::from_millis(timeout_ms)).min(outer));
+    (deadline, deadline.saturating_duration_since(now).as_millis() as u64)
+}
+
+fn graph_interruption(cancelled: bool, expired: bool, effective_timeout_ms: u64) -> Option<String> {
+    if cancelled { Some("Graph task cancelled; cancellation requested from backend".into()) }
+    else if expired { Some(format!("Graph task exceeded its deadline (effective time limit: {effective_timeout_ms} ms); cancellation requested from backend. Do not blindly retry with identical parameters; inspect the run and choose a suitable timeout_ms (workflow outer deadline still applies).")) }
+    else { None }
+}
 
 pub(crate) fn valid_mode(mode: &str) -> bool { matches!(mode, "graph" | "workflow") }
 
@@ -37,7 +59,7 @@ pub(crate) fn definitions(mode: &str) -> Vec<Value> {
     let space = json!({"type":"string","enum":["user","ai"]});
     let path = json!({"type":"string","description":"Relative path in the named workspace. No absolute paths or parent traversal."});
     let graph = json!({"type":"object"});
-    let execution = schema(json!({"graph":graph,"mode":{"type":"string","enum":["offline","streaming"]},"options":{"type":"object"}}), &["graph","mode"]);
+    let execution = schema(json!({"graph":graph,"mode":{"type":"string","enum":["offline","streaming"]},"options":{"type":"object"},"timeout_ms":{"type":"integer","minimum":1000,"maximum":1800000,"default":300000}}), &["graph","mode"]);
     let validation = schema(json!({"space":space,"graph":{"type":"object"},"mode":{"type":"string","enum":["offline","streaming"]},"options":{"type":"object"}}), &["space","graph","mode"]);
     let rows: Vec<(&str,&str,Value)> = vec![
         ("workspace_list","List one workspace directory in stable name order. offset defaults to 0 and limit to 100 (maximum 200). Entries also have a 16 KiB page byte budget, so a page may be shorter than limit with page_byte_limited=true. Follow next_offset, which advances by actual returned entries, for later pages; truncated means more entries may remain after this page. A scan is bounded to 10000 entries or 2 seconds: partial=true makes total unknown and pages cover only the scanned subset.",schema(json!({"space":space,"path":path,
@@ -55,7 +77,7 @@ pub(crate) fn definitions(mode: &str) -> Vec<Value> {
             "sample_rate":{"type":"integer","minimum":8000,"maximum":192000},"channels":{"type":"integer","enum":[1,2]}}), &["source_space","source_path","path"])),
         ("nodes_list","List available offline and streaming audio nodes.",schema(json!({}), &[])),
         ("graph_validate","Validate a graph whose file paths are relative to the selected workspace.",validation),
-        ("graph_run","Run a graph in the AI workspace; outputs remain there.",execution),
+        ("graph_run","Run a graph in the AI workspace; outputs remain there. timeout_ms defaults to 300000 ms (5 minutes), range 1000..1800000 ms (30 minutes). For long audio choose a sufficient budget before starting. The effective limit is the earlier of this budget and the workflow outer deadline (maximum 300 seconds). On timeout cancellation is requested; do not blindly retry identical parameters.",execution),
         ("workflow_validate","Read a workflow JSON file (64 KiB maximum) and validate its structure without running steps. Workflow v1 uses schema_version:1, inputs:{}, steps:[{id,type}], outputs:{}; steps are set, compute, concat, filter, select, call, for_each, or if. compute uses op:add/sub/mul/div with 2 args, or abs with 1 arg. concat uses 0..64 parts that resolve to strings/numbers. filter uses items plus an if-shaped condition; select uses items, by expression and order:min/max. Both allow at most 16 items; /item and /index are local to condition/by. select returns found/item/index/score; empty means found:false, ties choose first. References use {$ref:\"/inputs/name\"} or earlier /steps/id paths. Operand types and file paths are checked again at runtime.",schema(json!({"space":space,"path":path}), &["space","path"])),
         ("workflow_run","Run a validated workflow JSON file. inputs overrides only declared input keys. Calls use the existing basic tools; a failed step returns a partial report.",schema(json!({"space":space,"path":path,"inputs":{"type":"object"}}), &["space","path"])),
     ];
@@ -302,7 +324,7 @@ impl ToolContext {
 
     async fn graph_args(&mut self, name: &str, args: &Value) -> Result<(Value,String,Value,String,Vec<RunFileDraft>,Value),String> {
         if name == "graph_validate" { fields(args, &["space","graph","mode"], &["options"])?; }
-        else { fields(args, &["graph","mode"], &["options"])?; }
+        else { fields(args, &["graph","mode"], &["options","timeout_ms"])?; graph_timeout_ms(args)?; }
         let space = if name == "graph_validate" { arg(args,"space")? } else { "ai" };
         if !matches!(space,"user" | "ai") { return Err("Graph space must be user or ai".into()); }
         let mode = arg(args,"mode")?;
@@ -476,15 +498,16 @@ impl ToolContext {
                 Ok(json!({"nodes":crate::ai::catalog_nodes(&response)?}))
             }
             "graph_validate" | "graph_run" => {
-                let deadline = workflow_deadline.map_or_else(|| Instant::now() + GRAPH_TIMEOUT,
-                    |workflow_limit| (Instant::now() + GRAPH_TIMEOUT).min(workflow_limit));
+                let timeout_ms = if name == "graph_run" { graph_timeout_ms(args)? } else { GRAPH_VALIDATE_TIMEOUT.as_millis() as u64 };
+                let (deadline,effective_timeout_ms) = graph_budget(Instant::now(),timeout_ms,workflow_deadline);
+                let mut task_cancellation_requested = false;
                 let mut record_id = None;
                 let mut record_outputs = Vec::new();
                 let mut record_result = None;
                 let mut record_warning_text = None;
                 let outcome: Result<Value,String> = async {
                 let (graph, execution_mode, options, space, files, plugins) = self.graph_args(name,args).await?;
-                if Instant::now() >= deadline { return Err("Graph task exceeded its deadline".into()); }
+                if Instant::now() >= deadline { return Err(format!("Graph task exceeded its deadline (effective time limit: {effective_timeout_ms} ms); graph was not started. Do not blindly retry with identical parameters.")); }
                 if space == "ai" { self.spaces.check_quota()?; }
                 if cancel.load(Ordering::Acquire) { return Err("Agent turn cancelled".into()); }
                 let (manager,session) = if space == "user" { (self.shared.clone(),self.shared_session.clone()) }
@@ -494,7 +517,7 @@ impl ToolContext {
                     let (outputs,inputs): (Vec<_>,Vec<_>) = files.into_iter().partition(|file| file.role == "output");
                     record_outputs = outputs;
                     if let Some((store,app_data)) = &self.record {
-                        let mut configuration = json!({"mode":execution_mode,"graph":graph,"options":options,"workflow_step_path":self.workflow_step,"file_space":space});
+                        let mut configuration = json!({"mode":execution_mode,"graph":graph,"options":options,"workflow_step_path":self.workflow_step,"file_space":space,"timeout_ms":timeout_ms,"effective_timeout_ms":effective_timeout_ms,"workflow_deadline_applied":workflow_deadline.is_some()});
                         if plugins.as_array().is_some_and(|values| !values.is_empty()) { configuration["node_plugins"] = plugins; }
                         match store.begin(&self.spaces,app_data,RunDraft { kind:"graph".into(),origin:self.origin.into(),
                             parent_id:self.workflow_parent.clone(),name:self.workflow_step.clone().unwrap_or_else(||"Graph run".into()),
@@ -513,9 +536,10 @@ impl ToolContext {
                         let _ = request(manager.clone(),session.clone(),json!({"op":"tasks.cancel","task_id":task_id})).await;
                         return Err(format!("Graph exceeded AI workspace quota: {error}"));
                     }
-                    if cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
+                    if let Some(error) = graph_interruption(cancel.load(Ordering::Acquire),Instant::now() >= deadline,effective_timeout_ms) {
+                        task_cancellation_requested = true;
                         let _ = request(manager.clone(),session.clone(),json!({"op":"tasks.cancel","task_id":task_id})).await;
-                        return Err(if cancel.load(Ordering::Acquire) { "Graph task cancelled" } else { "Graph task exceeded its deadline" }.into());
+                        return Err(error);
                     }
                     let status = ensure_success(request(manager.clone(),session.clone(),json!({"op":"tasks.status","task_id":task_id})).await?)?;
                     match status.get("state").and_then(Value::as_str) {
@@ -551,7 +575,7 @@ impl ToolContext {
                 if name == "graph_run" {
                     if let (Some((store,app_data)),Some(id)) = (&self.record,&record_id) {
                         let state = record_result.as_ref().and_then(|v| v.get("state").or_else(||v.pointer("/data/state")).and_then(Value::as_str))
-                            .unwrap_or(if cancel.load(Ordering::Acquire) { "cancelled" } else if outcome.is_ok() { "succeeded" } else { "failed" });
+                            .unwrap_or(if task_cancellation_requested || cancel.load(Ordering::Acquire) { "cancelled" } else if outcome.is_ok() { "succeeded" } else { "failed" });
                         let value = record_result.clone().or_else(|| outcome.as_ref().ok().cloned());
                         let error = outcome.as_ref().err().cloned();
                         let mut outputs = record_outputs;

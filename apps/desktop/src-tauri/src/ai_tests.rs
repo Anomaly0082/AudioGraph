@@ -1,4 +1,19 @@
 use super::*;
+
+#[test]
+fn restart_reservation_preserves_active_request_and_can_be_rolled_back() {
+    let manager=AiManager::default();
+    let (sender,receiver)=watch::channel(false);
+    *manager.active.lock().unwrap()=Some(ActiveRequest{id:"active".into(),cancellation:sender});
+    assert!(manager.prepare_restart().is_err());
+    assert!(!*receiver.borrow());
+    assert!(!manager.closing.load(Ordering::Acquire));
+    manager.active.lock().unwrap().take();
+    manager.prepare_restart().unwrap();
+    assert!(manager.closing.load(Ordering::Acquire));
+    manager.reopen();
+    assert!(!manager.closing.load(Ordering::Acquire));
+}
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}, mpsc};

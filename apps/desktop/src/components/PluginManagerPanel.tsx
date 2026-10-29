@@ -21,7 +21,7 @@ export default function PluginManagerPanel({
         {view?.restart_required && <span className="badge">重启后生效</span>}
       </div>
       <p className="hint top-hint">
-        安装、启停和卸载只影响下次启动；当前 Graph 和任务继续使用本次启动的节点。
+        插件变更在重启后生效。
       </p>
       <div className="action-row">
         <button
@@ -39,6 +39,14 @@ export default function PluginManagerPanel({
         >
           <RefreshCw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
           刷新列表
+        </button>
+        <button
+          type="button"
+          disabled={!desktop || manager.busy || manager.loading}
+          onClick={() => void manager.restart()}
+        >
+          <RefreshCw className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />
+          重启并加载插件
         </button>
       </div>
       {!desktop && <p className="muted">请在桌面程序中管理插件。</p>}

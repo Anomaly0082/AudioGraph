@@ -1,5 +1,18 @@
 use super::*;
 
+#[test]
+fn restart_reservation_does_not_cancel_active_work_and_blocks_new_turns() {
+    let manager=AgentManager::default();
+    let (cancel,lease)=manager.begin("active").unwrap();
+    assert!(manager.prepare_restart().is_err());
+    assert!(!cancel.load(Ordering::Acquire));
+    drop(lease);
+    manager.prepare_restart().unwrap();
+    assert!(manager.begin("next").is_err());
+    manager.reopen();
+    assert!(manager.begin("next").is_ok());
+}
+
 #[cfg(windows)]
 #[path = "agent_live_tests.rs"]
 mod live_tests;
@@ -452,8 +465,42 @@ fn sixteen_model_rounds_limit_stops_without_seventeenth_request() {
         drop(lease);
         assert_eq!(response.state,"limited");
         assert_eq!((response.model_calls,response.tool_calls),(16,16));
-        assert!(response.text.contains("16 model request limit"));
+        assert!(response.text.contains("16 次模型请求上限"));
+        assert!(response.text.contains("已确认的执行情况"));
+        assert!(response.text.contains("没有成功导出"));
         for _ in 0..16 { received.recv_timeout(Duration::from_secs(1)).unwrap(); }
+        worker.join().unwrap();
+        backend.shutdown().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn repeated_failed_call_stops_before_third_dispatch_and_preserves_saved_file() {
+    tauri::async_runtime::block_on(async {
+        let (root,spaces,backend)=test_backend();
+        let (url,received,worker)=scripted_http(vec![
+            tool_response("save","file_write_text",json!({"path":"draft.json","content":"{}"})),
+            tool_response("missing-1","file_read_text",json!({"space":"ai","path":"absent.txt"})),
+            tool_response("list","workspace_list",json!({"space":"ai"})),
+            tool_response("missing-2","file_read_text",json!({"space":"ai","path":"absent.txt"})),
+            tool_response("missing-3","file_read_text",json!({"space":"ai","path":"absent.txt"})),
+        ]);
+        let manager=AgentManager::default();
+        let (cancel,lease)=manager.begin("repeat-failure").unwrap();
+        let response=run_turn(&manager,Arc::new(AiManager::default()),backend.clone(),spaces.clone(),
+            "script-user".into(),"graph".into(),"repeat-failure".into(),"prepare".into(),
+            AiConfig{base_url:url,model:"mock".into(),api_key:String::new()},None,cancel,None,None,None).await;
+        drop(lease);
+        assert_eq!(response.state,"limited");
+        assert_eq!((response.model_calls,response.tool_calls),(5,4));
+        assert!(response.text.contains("停止第三次重复调用"));
+        assert!(response.text.contains("draft.json"));
+        assert!(response.text.contains("不代表已执行"));
+        assert_eq!(std::fs::read_to_string(spaces.ai_root.join("draft.json")).unwrap(),"{}");
+        let requests=(0..5).map(|_| received.recv_timeout(Duration::from_secs(1)).unwrap()).collect::<Vec<_>>();
+        assert!(requests[2]["messages"].to_string().contains("recovery_guidance"));
         worker.join().unwrap();
         backend.shutdown().unwrap();
         std::fs::remove_dir_all(root).unwrap();
@@ -483,7 +530,8 @@ fn forty_tool_calls_are_allowed_but_the_next_call_has_no_side_effect() {
         drop(lease);
         assert_eq!(response.state,"limited");
         assert_eq!((response.model_calls,response.tool_calls),(3,40));
-        assert!(response.text.contains("40 tool call limit"));
+        assert!(response.text.contains("40 次工具调用上限"));
+        assert!(response.text.contains("1 个已提出的工具调用未执行"));
         assert!(!spaces.ai_root.join("must-not-exist.txt").exists());
         for _ in 0..3 { received.recv_timeout(Duration::from_secs(1)).unwrap(); }
         worker.join().unwrap();

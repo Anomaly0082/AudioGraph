@@ -10,6 +10,8 @@
   "include": [
     "src/hooks/useSessionState.ts",
     "src/model.ts",
+    "src/graph-edit-history.ts",
+    "src/graph-clipboard.ts",
     "src/ai-model.ts",
     "src/workflow-model.ts",
     "src/task-finalization.ts",

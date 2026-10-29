@@ -40,6 +40,48 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+test("restart rejects busy work, cancelled confirmation and work begun during confirmation", async () => {
+  let blocked = "running", confirmed = true, calls = 0, confirmations = 0;
+  const services = {
+    invoke: async () => view(), chooseDirectory: async () => null,
+    restartBlockedReason: () => blocked,
+    restartApp: async () => { calls++; },
+    confirm: async () => { confirmations++; return confirmed; },
+  };
+  const controller = createPluginManagerController(services);
+  assert.equal(await controller.restart(), false);
+  assert.equal(confirmations, 0);
+  blocked = null; confirmed = false;
+  assert.equal(await controller.restart(), false);
+  controller.setServices({ ...services, confirm: async () => { blocked = "new task"; return true; } });
+  assert.equal(await controller.restart(), false);
+  assert.equal(calls, 0);
+  assert.match(controller.getState().error, /new task/);
+  assert.equal(controller.getState().busy, false);
+});
+
+test("restart serializes plugin mutations and retains pending changes on failure", async () => {
+  const pending = deferred(); let calls = 0;
+  const services = {
+    invoke: async () => view({ restart_required: true }), chooseDirectory: async () => null,
+    confirm: async () => true, restartBlockedReason: () => null,
+    restartApp: async () => { calls++; await pending.promise; throw new Error("save unavailable"); },
+  };
+  const controller = createPluginManagerController(services);
+  await controller.refresh();
+  const restart = controller.restart();
+  assert.equal(await controller.install(), false);
+  assert.equal(await controller.restart(), false);
+  pending.resolve();
+  assert.equal(await restart, false);
+  assert.equal(calls, 1);
+  assert.equal(controller.getState().view.restart_required, true);
+  assert.match(controller.getState().error, /save unavailable/);
+  controller.setServices({ ...services, restartApp: async () => { calls++; } });
+  assert.equal(await controller.restart(), true);
+  assert.equal(calls, 2);
+});
+
 test("install requires a selected folder and explicit native-code trust", async () => {
   const calls = [];
   let selected = null;

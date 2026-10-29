@@ -18,7 +18,7 @@ export type PluginManagerView = {
   warnings: string[];
 };
 
-export type PluginManagerOperation = "install" | "enable" | "disable" | "uninstall" | "cancel-uninstall";
+export type PluginManagerOperation = "install" | "enable" | "disable" | "uninstall" | "cancel-uninstall" | "restart";
 
 export type PluginManagerState = {
   view: PluginManagerView | null;

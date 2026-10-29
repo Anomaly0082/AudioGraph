@@ -9,6 +9,8 @@ const testFiles = [
   "tests/workflow-model.test.mjs",
   "tests/pages.test.mjs",
   "tests/graph-editor-model.test.mjs",
+  "tests/graph-edit-history.test.mjs",
+  "tests/graph-clipboard.test.mjs",
   "tests/node-inspector.test.mjs",
   "tests/graph-canvas.test.mjs",
   "tests/canvas-interaction.test.mjs",

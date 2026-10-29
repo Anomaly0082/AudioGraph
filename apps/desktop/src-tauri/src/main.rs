@@ -51,10 +51,33 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind, MessageDialogButtons};
 fn request_close(app: tauri::AppHandle) {
     let coordinator=app.state::<Arc<session_state::CloseCoordinator>>().inner().clone();
     let Some(request_id)=coordinator.request() else { return; };
-    let _=app.emit("session-state-close-requested",serde_json::json!({"requestId":request_id}));
+    let _=dispatch_close(app,coordinator,request_id);
+}
+
+// Reuse the save acknowledgement and backend shutdown handshake. Never replace
+// the current process until drafts are saved and the old sidecar has exited.
+#[tauri::command]
+fn session_state_restart(app: tauri::AppHandle)->Result<(),String> {
+    let coordinator=app.state::<Arc<session_state::CloseCoordinator>>().inner().clone();
+    let request_id=coordinator.request_restart().ok_or("正在关闭或重启，请稍候")?;
+    dispatch_close(app,coordinator,request_id)
+}
+
+fn dispatch_close(app: tauri::AppHandle,coordinator: Arc<session_state::CloseCoordinator>,request_id: String)->Result<(),String> {
+    if let Err(error)=app.emit("session-state-close-requested",serde_json::json!({"requestId":request_id})) {
+        coordinator.cancel(&request_id);
+        return Err(format!("无法请求保存草稿：{error}"));
+    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if !coordinator.waiting(&request_id) { return; }
+        // A plugin restart must not bypass a missing save acknowledgement.
+        if coordinator.is_restart(&request_id) {
+            if coordinator.cancel(&request_id) {
+                let _=app.emit("session-state-close-cancelled",serde_json::json!({"requestId":request_id,"error":"草稿保存未确认，已取消重启，请重试。"}));
+            }
+            return;
+        }
         tauri::async_runtime::spawn_blocking(move || {
             if !coordinator.begin_confirmation(&request_id) { return; }
             let quit=app.dialog().message("尚未确认保存编辑器恢复记录。是否仍然退出？")
@@ -68,10 +91,18 @@ fn request_close(app: tauri::AppHandle) {
             }
         });
     });
+    Ok(())
 }
 #[tauri::command]
 fn session_state_close_confirmation(app: tauri::AppHandle, request_id: String)->bool {
-    app.state::<Arc<session_state::CloseCoordinator>>().begin_confirmation(&request_id)
+    let coordinator=app.state::<Arc<session_state::CloseCoordinator>>();
+    if coordinator.is_restart(&request_id) {
+        if coordinator.cancel(&request_id) {
+            let _=app.emit("session-state-close-cancelled",serde_json::json!({"requestId":request_id}));
+        }
+        return false;
+    }
+    coordinator.begin_confirmation(&request_id)
 }
 #[tauri::command]
 fn session_state_finish_close(app: tauri::AppHandle, request_id: String)->Result<(),String> {
@@ -85,12 +116,27 @@ fn session_state_cancel_close(app: tauri::AppHandle, request_id: String)->Result
 }
 
 fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManager>) {
-    if manager.closing.swap(true, Ordering::AcqRel) { return; }
     let ai = app.state::<Arc<ai::AiManager>>().inner().clone();
     let agent = app.state::<Arc<agent_runtime::AgentManager>>().inner().clone();
-    agent.shutdown();
-    ai.shutdown();
+    let restart=app.state::<Arc<session_state::CloseCoordinator>>().claimed_restart();
+    if !restart {
+        if manager.closing.swap(true, Ordering::AcqRel) { return; }
+        agent.shutdown();
+        ai.shutdown();
+    }
     tauri::async_runtime::spawn_blocking(move || {
+        if restart {
+            let prepared=agent.prepare_restart().and_then(|_| ai.prepare_restart())
+                .and_then(|_| manager.prepare_restart(&app.state::<Arc<commands::ManualRunTracker>>()));
+            if let Err(error)=prepared {
+                agent.reopen();
+                ai.reopen();
+                if let Some(request_id)=app.state::<Arc<session_state::CloseCoordinator>>().reset() {
+                    let _=app.emit("session-state-close-cancelled",serde_json::json!({"requestId":request_id,"error":error}));
+                }
+                return;
+            }
+        }
         let stopped = agent.wait_idle(std::time::Duration::from_secs(12));
         match stopped.and_then(|_| manager.shutdown()) {
             Ok(report) => {
@@ -98,7 +144,11 @@ fn shutdown_for_close(app: tauri::AppHandle, manager: Arc<backend::BackendManage
                     app.dialog().message(report.message).title("后台任务已中断")
                         .kind(MessageDialogKind::Warning).blocking_show();
                 }
-                app.exit(0);
+                if app.state::<Arc<session_state::CloseCoordinator>>().claimed_restart() {
+                    app.request_restart();
+                } else {
+                    app.exit(0);
+                }
             }
             Err(error) => {
                 if let Some(request_id)=app.state::<Arc<session_state::CloseCoordinator>>().reset() {
@@ -200,6 +250,7 @@ fn main() {
             ,session_state_finish_close
             ,session_state_close_confirmation
             ,session_state_cancel_close
+            ,session_state_restart
             ,workflow_editor::workflow_editor_validate
             ,workflow_editor::workflow_editor_load
             ,workflow_editor::workflow_editor_save

@@ -1,5 +1,7 @@
 # 构建与分发分析
 
+2026-10-28：已生成 NSIS 当前用户安装器，支持选择目录、快捷方式及 WebView2 缺失时联网补装。数据保留策略与未执行的动态验证见[安装器说明](windows-installer.md)。便携 ZIP 继续保留，MSI 尚未制作。
+
 2026-10-26：已完成主程序和后端 Release 构建，便携包含官方 VC Release CRT；ZIP 实测 37.62 MiB，解压 57.09 MiB。检查范围、产物及尚未验证的部分见 [Release 验证记录](release-validation.md)。
 
 2026-10-25 更新：当前已改用固定源码的音频精简 FFmpeg，构建方法与源许可材料见[音频精简构建](ffmpeg-audio-build.md)。`package-desktop.ps1` 可整理内嵌前端的 Release 便携目录，`-LocalDevelopmentOnly` 则整理 Debug 体验目录；两者均核验并携带 FFmpeg 源码包。NSIS/MSI 安装器尚未启用。以下数值保留为替换前的测量记录，不代表新包体积。

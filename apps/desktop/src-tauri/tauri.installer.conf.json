@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AudioGraph",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "useLocalToolsDir": true,
+    "publisher": "AudioGraph",
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {"type": "embedBootstrapper", "silent": true},
+      "nsis": {
+        "template": "installer/audio-graph.nsi",
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false,
+        "compression": "zlib"
+      }
+    }
+  }
+}

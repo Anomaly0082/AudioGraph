@@ -12,6 +12,14 @@ fn small(value: &Value) -> Value {
 }
 
 pub(super) fn model_receipt(name: &str, envelope: &Value) -> Value {
+    let mut receipt = execution_receipt(name, envelope);
+    if envelope["ok"] == false {
+        receipt["recovery_guidance"] = json!("Use the error already returned to make one targeted correction. Do not repeat unchanged failed calls or inspect unrelated audio/history. A timeout is not a format error: adjust graph_run.timeout_ms if appropriate, respecting the Workflow total deadline. A saved configuration is not an executed result. Preserve the user's requested processing order; if unsafe or unsupported, explain the conflict instead of silently reordering.");
+    }
+    receipt
+}
+
+fn execution_receipt(name: &str, envelope: &Value) -> Value {
     if !matches!(name, "graph_run" | "workflow_run")
         || serde_json::to_vec(envelope).map_or(usize::MAX, |v| v.len()) <= MAX_INLINE_RESULT {
         return envelope.clone();

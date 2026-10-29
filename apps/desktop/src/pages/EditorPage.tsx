@@ -1,5 +1,5 @@
-import { FileJson, FolderOpen, Save, SaveAll, ShieldCheck, Play, History, LayoutTemplate, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { FileJson, FolderOpen, Save, SaveAll, ShieldCheck, Play, History, LayoutTemplate, Plus, Undo2, Redo2, Copy, ClipboardPaste } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import type { GraphDraft } from "../hooks/useGraphDraft";
 import type { AudioSession } from "../hooks/useAudioSession";
 import {
@@ -74,6 +74,24 @@ export default function EditorPage({
   const view = draft.canvasView ?? initialCanvasView();
   const [error, setError] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [multiple, setMultiple] = useState<string[]>([]);
+  const jsonEdit = useRef(0);
+  const selectedIds = (multiple.includes(view.selectedId) ? multiple : [view.selectedId])
+    .filter(id => graph?.nodes.some(node => node.id === id));
+  function selectNode(id: string, extend = false) {
+    const ids = extend ? selectedIds.includes(id) ? selectedIds.filter(value => value !== id) : [...selectedIds, id] : id ? [id] : [];
+    setMultiple(ids);
+    draft.setCanvasView({ ...view, selectedId: ids.includes(id) ? id : ids.at(-1) ?? "" });
+  }
+  function copy() {
+    if (!graph || fileBusy) return;
+    draft.copyNodes(selectedIds, resolvedPositions(graph, nodes, view.positions));
+  }
+  function paste() {
+    if (!graph || fileBusy) return;
+    try { setMultiple(draft.pasteNodes(resolvedPositions(graph, nodes, view.positions))); setError(""); }
+    catch (reason) { setError(formatError(reason)); }
+  }
   useEffect(() => {
     setError("");
     setDeleteId(null);
@@ -107,7 +125,21 @@ export default function EditorPage({
     }
   }
   return (
-    <div className="visual-editor">
+    <div className="visual-editor" onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || event.altKey || fileBusy ||
+          (event.target as HTMLElement).closest("input, textarea, select, [contenteditable='true']")) return;
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "z" || key === "y") {
+        event.preventDefault();
+        if (key === "y" || event.shiftKey) draft.redo(); else draft.undo();
+      } else if (key === "c" && selectedIds.length) { event.preventDefault(); copy(); }
+      else if (key === "v" && draft.canPaste) { event.preventDefault(); paste(); }
+      else if (key === "a" && (event.target as HTMLElement).closest(".canvas-viewport") && graph) {
+        event.preventDefault(); setMultiple(graph.nodes.map(node => node.id));
+        draft.setCanvasView({ ...view, selectedId: graph.nodes[0]?.id ?? "" });
+      }
+    }}>
       <section className="panel">
         <div className="section-heading">
           <h2><FileJson className="ui-icon" aria-hidden="true" size={16} strokeWidth={1.65} />Graph</h2>
@@ -278,6 +310,12 @@ export default function EditorPage({
       )}
       <div className="graph-workspace">
         <div>
+          <div className="action-row" role="toolbar" aria-label="节点编辑操作">
+            <button disabled={fileBusy || !draft.canUndo} onClick={() => draft.undo()} title="撤销（Ctrl+Z）"><Undo2 className="ui-icon" size={16} aria-hidden="true" />撤销</button>
+            <button disabled={fileBusy || !draft.canRedo} onClick={() => draft.redo()} title="重做（Ctrl+Shift+Z / Ctrl+Y）"><Redo2 className="ui-icon" size={16} aria-hidden="true" />重做</button>
+            <button disabled={fileBusy || !selectedIds.length} onClick={copy} title="复制节点（Ctrl+C；Shift+单击多选）"><Copy className="ui-icon" size={16} aria-hidden="true" />复制</button>
+            <button disabled={fileBusy || !graph || !draft.canPaste} onClick={paste} title="粘贴节点（Ctrl+V）"><ClipboardPaste className="ui-icon" size={16} aria-hidden="true" />粘贴</button>
+          </div>
           {graph && (
             <GraphCanvas
               graph={graph}
@@ -285,6 +323,8 @@ export default function EditorPage({
               catalogAvailable={!!connection}
               view={view}
               onView={draft.setCanvasView}
+              selectedIds={selectedIds}
+              onSelect={selectNode}
               disabled={fileBusy}
               connectionEditReason={
                 !connection
@@ -318,8 +358,7 @@ export default function EditorPage({
                       className="danger"
                       disabled={fileBusy}
                       onClick={() => {
-                        change((value) => removeGraphNode(value, selected.id));
-                        draft.setCanvasView({ ...view, selectedId: "" });
+                        draft.editGraph(JSON.stringify(removeGraphNode(graph, selected.id), null, 2), { ...view, selectedId: "" });
                         setDeleteId(null);
                       }}
                     >
@@ -416,8 +455,7 @@ export default function EditorPage({
                           added.graph.nodes[added.graph.nodes.length - 1],
                         )
                       ] = { x, y };
-                      draft.editGraph(JSON.stringify(added.graph, null, 2));
-                      draft.setCanvasView({
+                      draft.editGraph(JSON.stringify(added.graph, null, 2), {
                         ...view,
                         positions,
                         selectedId: added.nodeId,
@@ -453,7 +491,8 @@ export default function EditorPage({
           disabled={fileBusy}
           spellCheck={false}
           value={draft.graphText}
-          onChange={(event) => draft.editGraph(event.target.value)}
+          onFocus={() => { jsonEdit.current++; }}
+          onChange={(event) => draft.editGraph(event.target.value, undefined, `json-${jsonEdit.current}`)}
         />
       </Disclosure>
     </div>

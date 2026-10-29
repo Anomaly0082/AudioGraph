@@ -60,7 +60,7 @@ export function useSessionState(desktop: boolean, capture: () => SessionState, r
     // effect replay. Cleanup must not discard writes or miss native close events.
     initialized.current = (async () => {
       try {
-        await listenSessionCloseCancelled(id => { if (activeClose.current === id) { activeClose.current = null; setClosing(false); } });
+        await listenSessionCloseCancelled((id, reason) => { if (activeClose.current === id) { activeClose.current = null; setClosing(false); if (reason) setError(reason); } });
         await listenSessionClose(id => { void close(id); });
         const result = await invokeDesktop<{ state: unknown }>("session_state_load");
         if (result.state !== null) await callbacks.current.restore(validateSessionState(result.state));

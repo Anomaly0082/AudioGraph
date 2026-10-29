@@ -226,3 +226,27 @@ fn ordered_comparison_requires_numbers() {
     doc["steps"][0]["condition"]["op"] = json!("eq");
     assert_eq!(run_test(&doc, &mut MockHost::default()).state, "succeeded");
 }
+
+#[test]
+fn graph_timeout_argument_survives_workflow_without_extending_outer_limit() {
+    struct DeadlineHost { timeout_ms: Option<u64>, remaining: Option<Duration> }
+    impl WorkflowHost for DeadlineHost {
+        fn call<'a>(&'a mut self, _tool: &'a str, args: Value, _cancel: &'a AtomicBool, deadline: Instant, _step_path: &'a str)
+            -> Pin<Box<dyn Future<Output = Result<Value,String>> + Send + 'a>> {
+            self.timeout_ms = args["timeout_ms"].as_u64();
+            self.remaining = Some(deadline.saturating_duration_since(Instant::now()));
+            Box::pin(std::future::ready(Ok(json!({"state":"succeeded"}))))
+        }
+    }
+    let doc = json!({"schema_version":1,"inputs":{"budget":1800000},"limits":{"timeout_ms":300000},
+        "steps":[{"id":"long","type":"call","tool":"graph_run","args":{"graph":{},"mode":"offline","timeout_ms":{"$ref":"/inputs/budget"}}}],"outputs":{}});
+    let workflow = validate(&doc).unwrap();
+    let mut host = DeadlineHost { timeout_ms:None,remaining:None };
+    let report = tauri::async_runtime::block_on(run(&workflow,None,&mut host,&AtomicBool::new(false)));
+    assert_eq!(report.state,"succeeded");
+    assert_eq!(host.timeout_ms,Some(1_800_000));
+    assert!(host.remaining.unwrap() <= Duration::from_secs(300));
+    let mut invalid = doc;
+    invalid["limits"]["timeout_ms"] = json!(300001);
+    assert!(validate(&invalid).is_err());
+}

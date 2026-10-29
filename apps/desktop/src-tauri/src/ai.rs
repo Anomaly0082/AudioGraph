@@ -117,6 +117,12 @@ impl AiManager {
         if let Some(request) = self.active.lock().unwrap().as_ref() { let _ = request.cancellation.send(true); }
     }
     pub fn shutdown(&self) { self.closing.store(true, Ordering::Release); self.cancel_all(); }
+    pub(crate) fn prepare_restart(&self) -> Result<(),String> {
+        let active=self.active.try_lock().map_err(|_| "模型请求尚未完成")?;
+        if active.is_some() || self.closing.load(Ordering::Acquire) { return Err("请先结束模型请求，再重启".into()); }
+        self.closing.store(true,Ordering::Release);
+        Ok(())
+    }
     // 后台关闭失败、窗口仍保留时，允许用户继续操作；已取消的旧请求不会恢复。
     pub fn reopen(&self) { self.closing.store(false, Ordering::Release); }
 }

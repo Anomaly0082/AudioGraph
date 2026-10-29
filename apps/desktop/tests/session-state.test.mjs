@@ -74,8 +74,23 @@ function recoveryHost(overrides = {}) {
   vm.runInThisContext(`(function(require,exports,setTimeout,clearTimeout){${readFileSync(filename, "utf8")}\n})`, { filename })(id => id === "react" ? react : id === "../api/desktop" ? api : localRequire(id), exports,
     (callback, ms) => { if (ms === 0) { queueMicrotask(callback); return 0; } const id = ++timerId; timers.set(id, callback); return id; }, id => timers.delete(id));
   function render() { cursor = 0; const value = exports.useSessionState(true, () => current, async restored => { current = restored; }); while (effects.length) effects.shift()(); return value; }
-  return { render, calls, set: value => current = value, close: id => close(id), cancel: id => cancel(id), replay: () => { for (const slot of slots) if (slot?.effect) slot.effect(); }, timers: () => { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job()); } };
+  return { render, calls, set: value => current = value, close: id => close(id), cancel: (id, error) => cancel(id, error), replay: () => { for (const slot of slots) if (slot?.effect) slot.effect(); }, timers: () => { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(job => job()); } };
 }
+
+test("restart cancellation reports failure and late save cannot acknowledge cancelled request", async () => {
+  const saved = deferred();
+  const host = recoveryHost({ invokeDesktop: async (command, args) => {
+    host.calls.push([command, args]);
+    if (command === "session_state_load") return { state: null };
+    if (command === "session_state_save") return saved.promise;
+  } });
+  host.render(); await tick(); host.render(); host.close("restart"); await tick();
+  host.cancel("restart", "save acknowledgement timed out");
+  assert.equal(host.render().closing, false);
+  assert.match(host.render().error, /timed out/);
+  saved.resolve(); await tick();
+  assert.equal(host.calls.filter(([command]) => command === "session_state_finish_close").length, 0);
+});
 test("StrictMode effect replay reads once and close-before-load flushes restored draft", async () => {
   const loaded = deferred();
   const host = recoveryHost({ invokeDesktop: async (command, args) => { host.calls.push([command, args]); return command === "session_state_load" ? loaded.promise : undefined; } });

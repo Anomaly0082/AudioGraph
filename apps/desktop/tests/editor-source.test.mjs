@@ -136,6 +136,51 @@ const deferred = () => {
 };
 const connection = (sessionId = "a", workspace = "C:\\Project") => ({ sessionId, workspace });
 
+test("Graph history restores an atomic node edit and drag without losing saved origin", async () => {
+  const graph = { schema_version: 1, nodes: [{ id: "n", type: "text_input", parameters: { text: "old" } }], connections: [] };
+  const writes = [];
+  const host = hookHost("useGraphDraft", {
+    chooseGraphFile: async () => "C:/Project/g.json", confirmDesktop: async () => true,
+    loadGraphDesktop: async () => ({ graph, path: "C:/Project/g.json", revision: "r1" }),
+    saveGraphDesktop: async (...args) => { writes.push(args); return { path: args[1], revision: "r2" }; },
+    chooseNewGraphFile: async () => { throw Error("must save to original"); },
+  });
+  let hook = host.render("a", "C:\\Project"); await hook.loadGraph(connection()); hook = host.render();
+  const original = hook.graphText, originalView = hook.canvasView;
+  const next = structuredClone(graph); next.nodes[0].parameters.text = "new";
+  hook.editGraph(JSON.stringify(next), { ...originalView, positions: { '["n","text_input"]': { x: 80, y: 90 } }, selectedId: "n" });
+  hook = host.render(); assert.equal(hook.canUndo, true);
+  hook.undo(); hook = host.render();
+  assert.equal(hook.graphText, original); assert.deepEqual(hook.canvasView, originalView); assert.equal(hook.modified, false);
+  hook.redo(); hook = host.render(); await hook.saveGraph(connection()); hook = host.render();
+  assert.equal(writes[0][1], "C:/Project/g.json"); assert.equal(writes[0][3], "r1");
+  assert.equal(hook.modified, false);
+  hook.undo(); hook = host.render(); assert.equal(hook.modified, true);
+  await hook.saveGraph(connection()); assert.equal(writes[1][3], "r2");
+});
+
+test("Graph gesture history groups dragging, ignores camera and clears on document replacement", () => {
+  const host = hookHost("useGraphDraft", {}); let hook = host.render(null, "");
+  const before = hook.canvasView;
+  for (let x = 1; x <= 5; x++) {
+    hook.setCanvasView({ ...hook.canvasView, positions: { '["a","b"]': { x, y: 12 } } }, "drag-one"); hook = host.render();
+  }
+  hook.setCanvasView({ ...hook.canvasView, zoom: 2 }); hook = host.render();
+  hook.undo(); hook = host.render(); assert.deepEqual(hook.canvasView, before); assert.equal(hook.canUndo, false);
+  hook.redo(); hook = host.render(); assert.equal(hook.canvasView.positions['["a","b"]'].x, 5);
+  hook.replaceGraph(hook.graphText); hook = host.render(); assert.equal(hook.canUndo, false); assert.equal(hook.canRedo, false);
+});
+
+test("Graph paste is one undo step with internal links; new workspace clears node clipboard", () => {
+  const host = hookHost("useGraphDraft", {}); let hook = host.render("a", "C:/Project");
+  const before = hook.graphText, ids = hook.localGraph.graph.nodes.map(n => n.id);
+  hook.copyNodes(ids, {}); hook = host.render(); assert.equal(hook.canPaste, true);
+  const pasted = hook.pasteNodes({}); hook = host.render();
+  assert.equal(pasted.length, ids.length); assert.equal(hook.localGraph.graph.nodes.length, ids.length * 2);
+  hook.undo(); hook = host.render(); assert.equal(hook.graphText, before); assert.equal(hook.canUndo, false);
+  hook = host.render("b", "C:/Other"); assert.equal(hook.canPaste, false); assert.equal(hook.canRedo, false);
+});
+
 function sessionHost(overrides = {}) {
   const calls = [], history = [];
   let listener, serial = 0;

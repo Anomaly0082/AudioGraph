@@ -800,3 +800,51 @@ fn real_cpp_workflow_runs_three_gain_variants_and_preserves_source() {
         std::fs::remove_dir_all(root).unwrap();
     });
 }
+
+#[test]
+fn graph_timeout_boundaries_and_schema_are_strict() {
+    assert_eq!(graph_timeout_ms(&json!({})).unwrap(),300_000);
+    for n in [1000,300_000,1_800_000] {
+        assert_eq!(graph_timeout_ms(&json!({"timeout_ms":n})).unwrap(),n);
+    }
+    for value in [json!(0),json!(-1),json!(999),json!(1_800_001),json!(1.5),json!(1000.0),json!("300000"),json!(null),json!(true)] {
+        assert!(graph_timeout_ms(&json!({"timeout_ms":value})).is_err(),"{value}");
+    }
+    let defs = definitions("workflow");
+    let run = defs.iter().find(|d| d["function"]["name"] == "graph_run").unwrap();
+    let validate = defs.iter().find(|d| d["function"]["name"] == "graph_validate").unwrap();
+    assert_eq!(run["function"]["parameters"]["properties"]["timeout_ms"],json!({"type":"integer","minimum":1000,"maximum":1800000,"default":300000}));
+    assert!(validate["function"]["parameters"]["properties"].get("timeout_ms").is_none());
+}
+
+#[test]
+fn graph_timeout_budget_never_extends_workflow_deadline() {
+    let now = Instant::now();
+    assert_eq!(graph_budget(now,300_000,None),(now + Duration::from_secs(300),300_000));
+    let earlier = now + Duration::from_millis(1250);
+    assert_eq!(graph_budget(now,1_800_000,Some(earlier)),(earlier,1250));
+    assert_eq!(graph_budget(now,1000,Some(earlier)),(now + Duration::from_secs(1),1000));
+    assert_eq!(graph_budget(now,1_800_000,Some(now - Duration::from_secs(1))).1,0);
+    assert!(graph_interruption(false,false,1250).is_none());
+    let timeout = graph_interruption(false,true,1250).unwrap();
+    assert!(timeout.starts_with("Graph task exceeded its deadline"));
+    assert!(timeout.contains("1250 ms") && timeout.contains("cancellation requested") && timeout.contains("Do not blindly retry"));
+    assert!(graph_interruption(true,true,1250).unwrap().starts_with("Graph task cancelled"));
+}
+
+#[test]
+fn graph_timeout_rejected_without_touching_files_or_backend() {
+    tauri::async_runtime::block_on(async {
+        let (root,spaces) = spaces();
+        let original = spaces.user_root.join("original.wav");
+        std::fs::write(&original,b"untouched original").unwrap();
+        let mut context = ToolContext::new(spaces,Arc::new(BackendManager::default()),"unconnected".into());
+        let cancel = AtomicBool::new(false);
+        let args = json!({"mode":"offline","graph":{},"timeout_ms":0});
+        assert!(context.dispatch("workflow","graph_run",&args,&cancel).await.unwrap_err().contains("timeout_ms"));
+        let args = json!({"space":"user","mode":"offline","graph":{},"timeout_ms":1000});
+        assert!(context.dispatch("graph","graph_validate",&args,&cancel).await.unwrap_err().contains("Unknown tool argument: timeout_ms"));
+        assert_eq!(std::fs::read(&original).unwrap(),b"untouched original");
+        std::fs::remove_dir_all(root).unwrap();
+    });
+}

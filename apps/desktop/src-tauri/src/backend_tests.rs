@@ -1,4 +1,16 @@
 use super::*;
+
+#[test]
+fn restart_refuses_inflight_workspace_operation_without_reserving_close() {
+    let manager=BackendManager::default();
+    let tracker=crate::commands::ManualRunTracker::default();
+    let lease=manager.lifecycle.lock().unwrap();
+    assert!(manager.prepare_restart(&tracker).is_err());
+    assert!(!manager.closing.load(Ordering::Acquire));
+    drop(lease);
+    manager.prepare_restart(&tracker).unwrap();
+    assert!(manager.closing.load(Ordering::Acquire));
+}
 use crate::graph_files::{load_graph_file, save_graph_file, strict_json};
 use std::sync::atomic::AtomicUsize;
 

@@ -37,7 +37,9 @@ type Props = {
   nodes: NodeInfo[];
   catalogAvailable?: boolean;
   view: CanvasView;
-  onView: (value: CanvasView) => void;
+  onView: (value: CanvasView, historyGroup?: string) => void;
+  selectedIds?: string[];
+  onSelect?: (id: string, extend?: boolean) => void;
   disabled?: boolean;
   connectionEditReason?: string;
   onConnect: (from: Endpoint, to: Endpoint, originalIndex?: number) => void;
@@ -50,6 +52,7 @@ type Gesture =
       key: string;
       start: Point;
       origin: Point;
+      group: string;
     }
   | { kind: "pan"; pointerId: number; start: Point; origin: Point }
   | { kind: "wire"; pointerId: number; start: Point };
@@ -63,6 +66,8 @@ export default function GraphCanvas({
   catalogAvailable = nodes.length > 0,
   view,
   onView,
+  selectedIds,
+  onSelect,
   disabled,
   connectionEditReason,
   onConnect,
@@ -77,6 +82,7 @@ export default function GraphCanvas({
   const catalogKey = JSON.stringify(nodes);
   const viewport = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
+  const dragSerial = useRef(0);
   const [panning, setPanning] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const pendingRef = useRef<Pending | null>(null);
@@ -248,7 +254,7 @@ export default function GraphCanvas({
             ),
           },
         },
-      });
+      }, active.group);
     } else if (pendingRef.current && !wiringDisabled) {
       const rect = box.getBoundingClientRect();
       setPointer(
@@ -368,6 +374,7 @@ export default function GraphCanvas({
       className="graph-canvas"
       aria-label="节点画布"
       onKeyDown={(event) => {
+        if ((event.ctrlKey || event.metaKey) && ["z", "y", "v"].includes(event.key.toLowerCase())) clearConnection();
         if (event.key === "Escape") {
           clearConnection();
           setEdgeIndex(null);
@@ -476,6 +483,7 @@ export default function GraphCanvas({
           ) {
             clearConnection();
             setEdgeIndex(null);
+            onSelect?.("");
             event.currentTarget.focus({ preventScroll: true });
           }
         }}
@@ -572,7 +580,7 @@ export default function GraphCanvas({
           {cards.map((card) => (
             <article
               key={card.node.id}
-              className={`canvas-node ${view.selectedId === card.node.id ? "selected" : ""} ${!card.descriptor ? "unknown" : ""}`}
+              className={`canvas-node ${(selectedIds ?? [view.selectedId]).includes(card.node.id) ? "selected" : ""} ${!card.descriptor ? "unknown" : ""}`}
               style={{
                 left: card.point.x,
                 top: card.point.y,
@@ -587,22 +595,30 @@ export default function GraphCanvas({
                 title={
                   !card.descriptor && catalogAvailable
                     ? `节点类型不可用：${card.node.type}；参数和连接已保留`
-                    : "拖动调整位置"
+                    : "拖动调整位置；Shift+单击多选"
                 }
-                onClick={() => onView({ ...view, selectedId: card.node.id })}
+                onClick={(event) => {
+                  if (event.detail !== 0) return;
+                  if (onSelect) onSelect(card.node.id, event.shiftKey);
+                  else onView({ ...view, selectedId: card.node.id });
+                }}
                 onPointerDown={(event) => {
                   if (event.button !== 0 || disabled) return;
                   event.preventDefault();
                   clearConnection();
                   setEdgeIndex(null);
+                  viewport.current?.focus({ preventScroll: true });
+                  if (onSelect) onSelect(card.node.id, event.shiftKey);
+                  else onView({ ...view, selectedId: card.node.id });
+                  if (event.shiftKey) return;
                   gesture.current = {
                     kind: "node",
                     pointerId: event.pointerId,
                     key: positionKey(card.node),
                     start: { x: event.clientX, y: event.clientY },
                     origin: card.point,
+                    group: `drag-${++dragSerial.current}-${Date.now()}`,
                   };
-                  onView({ ...view, selectedId: card.node.id });
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
               >

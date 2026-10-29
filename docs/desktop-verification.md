@@ -17,7 +17,7 @@ Windows 需已有 VS2022 C++ 工具，且当前终端能找到 `cl.exe` 和 `lin
 pwsh -NoProfile -File scripts/verify-desktop.ps1 -Headless -PlaywrightModule 'C:/tools/playwright/index.js' -Chromium 'C:/tools/chromium/chrome.exe'
 ```
 
-也可事先设置 `AUDIOGRAPH_PLAYWRIGHT_MODULE` 与 `AUDIOGRAPH_CHROMIUM`。缺少文件时会在任何测试开始前失败，不会自动安装浏览器。此模式追加五个无头脚本，验证工作区文件交互（含复制路径）、对话输入性能、工作台布局、会话删除及异常恢复；使用模拟的原生边界，不启动WebView2，不写真实剪贴板或删除真实会话。`-List -Headless`只打印包含这五步的固定JSON计划，不检查工具或创建输出。
+也可事先设置 `AUDIOGRAPH_PLAYWRIGHT_MODULE` 与 `AUDIOGRAPH_CHROMIUM`。缺少文件时会在任何测试开始前失败，不会自动安装浏览器。此模式追加六个无头脚本，验证工作区文件交互（含复制路径）、对话输入性能、工作台布局、会话删除、异常恢复及节点编辑撤销/复制粘贴；使用模拟的原生边界，不启动WebView2，不写真实剪贴板或删除真实会话。`-List -Headless`只打印包含这六步的固定JSON计划，不检查工具或创建输出。
 
 异常恢复检查覆盖：请求与历史读取同时失败、取消失败后重新取消、收到回复后历史读取失败、旧历史/AI响应晚到、未发送或已恢复草稿在同目录新会话连接后保留，以及切换目录时草稿隔离。保留范围是本次程序进程内；不会自动重新发送请求。在途请求遇到工作区断开后仍以保存的会话记录为准，不承诺恢复尚未保存的模型回复。
 

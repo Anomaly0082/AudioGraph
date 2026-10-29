@@ -166,9 +166,13 @@ pub async fn session_state_clear(app: tauri::AppHandle,store: tauri::State<'_,Ar
 }
 
 #[derive(Default)] pub struct CloseCoordinator { state: Mutex<CloseState> }
-#[derive(Default)] struct CloseState { sequence: u64, pending: Option<(String,bool,bool)> }
+#[derive(Default)] struct CloseState { sequence: u64, pending: Option<(String,bool,bool)>, restart: bool }
 impl CloseCoordinator {
-    pub fn request(&self)->Option<String> { let mut s=self.state.lock().ok()?; if s.pending.is_some(){return None;} s.sequence+=1; let id=format!("{}-{}",std::process::id(),s.sequence); s.pending=Some((id.clone(),false,false)); Some(id) }
+    pub fn request(&self)->Option<String> { self.request_action(false) }
+    pub fn request_restart(&self)->Option<String> { self.request_action(true) }
+    fn request_action(&self,restart:bool)->Option<String> { let mut s=self.state.lock().ok()?; if s.pending.is_some(){return None;} s.sequence+=1; let id=format!("{}-{}",std::process::id(),s.sequence); s.pending=Some((id.clone(),false,false)); s.restart=restart; Some(id) }
+    pub fn is_restart(&self,id:&str)->bool { self.state.lock().is_ok_and(|s|s.restart && s.pending.as_ref().is_some_and(|(current,_,_)|current==id)) }
+    pub fn claimed_restart(&self)->bool { self.state.lock().is_ok_and(|s|s.restart && s.pending.as_ref().is_some_and(|(_,claimed,_)|*claimed)) }
     pub fn claim(&self,id:&str)->bool { let Ok(mut s)=self.state.lock() else{return false}; if let Some((current,claimed,_))=&mut s.pending { if current==id && !*claimed { *claimed=true; return true; } } false }
     pub fn waiting(&self,id:&str)->bool { self.state.lock().is_ok_and(|s|s.pending.as_ref().is_some_and(|(current,claimed,confirmation)|current==id && !claimed && !confirmation)) }
     /// Frontend and timeout fallback compete for one confirmation dialog slot.
@@ -179,6 +183,29 @@ impl CloseCoordinator {
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test] fn restart_intent_is_bound_to_one_acknowledged_close() {
+        let c=CloseCoordinator::default();
+        let restart=c.request_restart().unwrap();
+        assert!(c.request().is_none());
+        assert!(c.is_restart(&restart));
+        assert!(!c.claimed_restart());
+        assert!(!c.is_restart("stale"));
+        assert!(c.cancel(&restart));
+        assert!(!c.claim(&restart));
+        assert!(!c.claimed_restart());
+        let close=c.request().unwrap();
+        assert!(c.request_restart().is_none());
+        assert!(c.claim(&close));
+        assert!(!c.claimed_restart());
+        c.reset();
+        let retry=c.request_restart().unwrap();
+        assert!(!c.claim(&restart));
+        assert!(c.claim(&retry));
+        assert!(c.claimed_restart());
+        assert!(!c.cancel(&retry));
+        c.reset();
+        assert!(!c.claimed_restart());
+    }
     #[test] fn permission_choices_roundtrip_and_legacy_defaults_are_safe() {
         let legacy=doc();
         assert!(!legacy.permissions.allow_devices && !legacy.permissions.allow_monitor);

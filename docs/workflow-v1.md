@@ -123,7 +123,7 @@ Graph可在call的args中写成带值引用的JSON结构，也可整体作为输
 
 limits默认：max_steps=128、max_tool_calls=32、max_graph_runs=8、timeout_ms=120000；最高分别为256、64、16、300000。控制结构与每次实际执行的子步骤都计数，循环为空也计算其控制步骤。程序嵌套最多4层，JSON/表达式深度最多32。运行状态/结果序列化总量限制1MiB，单个求值结果最多256KiB。
 
-每个步骤和工具调用前检查取消、时限与预算，Graph运行时沿用同一取消信号，并以剩余Workflow时限收紧Graph自身60秒时限。不能通过多层循环或嵌套工作流绕过限制。取消不意味着回滚已写文件，清理完成前不返回“已停止”。
+每个步骤和工具调用前检查取消、时限与预算，Graph运行时沿用同一取消信号。`graph_run.args.timeout_ms` 默认300000，允许1000–1800000整数；实际预算取该值与剩余Workflow时限的较小值，Workflow总时限最高仍为300000。不能通过多层循环或嵌套工作流绕过限制。取消不意味着回滚已写文件，清理完成前不返回“已停止”。
 
 返回结构化报告：`schema_version`、`state`（succeeded/failed/cancelled/limited）、`outputs`、`step_results`、`trace`、计数及适用的`error`。错误包含code/message/step_path，trace可定位循环的具体迭代。失败时outputs为空，保留已完成步骤及工具信息，不把中途结果伪装为最终成功。源文件space/path及SHA256记录在工具返回中。
 

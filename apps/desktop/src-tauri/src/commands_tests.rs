@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn restart_refuses_running_uncertain_and_concurrent_file_operations() {
+    let tracker=ManualRunTracker::default();
+    let backend=BackendManager::default();
+    {
+        let _operation=tracker.operations.lock().unwrap();
+        assert!(backend.prepare_restart(&tracker).is_err());
+    }
+    tracker.uncertain_starts.lock().unwrap().insert("session".into());
+    assert!(backend.prepare_restart(&tracker).is_err());
+    tracker.uncertain_starts.lock().unwrap().clear();
+    tracker.tasks.lock().unwrap().insert(("session".into(),"task".into()),PendingRun{id:"record".into(),outputs:vec![]});
+    assert!(backend.prepare_restart(&tracker).is_err());
+    assert!(!backend.closing.load(std::sync::atomic::Ordering::Acquire));
+    tracker.tasks.lock().unwrap().clear();
+    backend.prepare_restart(&tracker).unwrap();
+    assert!(backend.request("session",json!({"op":"tasks.start"})).unwrap_err().contains("关闭"));
+}
+
+#[test]
 fn manual_files_review_running_and_uncertain_sessions_fail_closed() {
     let tracker=ManualRunTracker::default();
     tracker.tasks.lock().unwrap().insert(("running".into(),"task".into()),PendingRun{id:"record".into(),outputs:vec![]});
